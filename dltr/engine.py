@@ -77,11 +77,12 @@ _MPS = None
 
 
 def _mps_ok():
-    """Apple Silicon Macs: CTranslate2's Metal (MPS) backend uses the Mac's GPU. Off with DLTR_FORCE_CPU or
-    once it has failed on this Mac."""
+    """Apple Silicon Macs: CTranslate2's Metal (MPS) backend can use the Mac's GPU. It's experimental and was
+    slower than the CPU on the test Mac, so it's opt-in: set DLTR_USE_MPS=1 to try it."""
     global _MPS
     if _MPS is None:
-        _MPS = sys.platform == "darwin" and not os.environ.get("DLTR_FORCE_CPU")
+        _MPS = (sys.platform == "darwin" and bool(os.environ.get("DLTR_USE_MPS"))
+                and not os.environ.get("DLTR_FORCE_CPU"))
         if _MPS:
             try:
                 import ctranslate2
