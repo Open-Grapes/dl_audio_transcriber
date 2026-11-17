@@ -143,7 +143,7 @@ def speech_sample(t):
         sh("say", "-v", voice, "-o", f, "--file-format=WAVE", "--data-format=LEI16@16000", text)
         parts.append(f)
     out = t / "dialog.wav"
-    silence = b"\x00\x00" * 16000 // 2              # half a second between speakers
+    silence = b"\x00\x00" * (16000 // 2)            # half a second between speakers
     with wave.open(str(out), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
