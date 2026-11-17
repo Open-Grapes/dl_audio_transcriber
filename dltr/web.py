@@ -120,8 +120,9 @@ class Jobs:
                 return
             res = j["tl_result"] if step.get("which") == "translation" and j.get("tl_result") else j["result"]
             j["sum"].update(state="working", stage="Reading …", text="")
-            self.wk.submit({"kind": "summarize", "id": f"sm:{jid}", "text": engine.to_text(res, True),
-                            "lang": step["lang"], "detail": step.get("detail", "normal"), "times": True})
+            times = not res.get("no_times")
+            self.wk.submit({"kind": "summarize", "id": f"sm:{jid}", "text": engine.to_text(res, times),
+                            "lang": step["lang"], "detail": step.get("detail", "normal"), "times": times})
 
     def add_step(self, jid, step):
         with self.lock:
@@ -339,7 +340,7 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _brief(j, jobs):
-        out = {k: j.get(k) for k in ("id", "name", "state", "stage", "progress", "size", "added", "took")}
+        out = {k: j.get(k) for k in ("id", "name", "state", "stage", "progress", "size", "added", "took", "text")}
         out["duration"] = (j.get("result") or {}).get("duration") or j.get("duration")
         if j["state"] == "queued":
             out["ahead"] = jobs.position(j["id"])
@@ -424,6 +425,9 @@ class Handler(BaseHTTPRequestHandler):
     def _export(self, jid):
         q = self._query()
         fmt = q.get("fmt", "txt")
+        which = q.get("which", "transcript")
+        if which == "summary":
+            return self._export_summary(jid, fmt)
         if fmt not in engine.WRITERS:
             raise BadRequest("Unknown format.")
         jobs = self.server.jobs
@@ -440,7 +444,7 @@ class Handler(BaseHTTPRequestHandler):
         data = engine.WRITERS[fmt](res, ts) if fmt in engine.TIMESTAMPED else engine.WRITERS[fmt](res)
         if isinstance(data, str):
             data = data.encode("utf-8-sig" if fmt in ("txt", "csv") else "utf-8")
-        stem = Path(j["name"]).stem
+        stem = "Pasted text" if j.get("text") else Path(j["name"]).stem
         if which == "translation":
             tgt = j["tr"]["tgt"]
             stem += "_" + ({"zho_Hans": "zh-Hans", "zho_Hant": "zh-Hant", "yue_Hant": "yue"}.get(tgt) or
@@ -451,12 +455,33 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, data, ctype, {
             "Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(name)}"})
 
+    def _export_summary(self, jid, fmt):
+        if fmt not in engine.SUMMARY_FORMATS:
+            raise BadRequest("Unknown format.")
+        with self.server.jobs.lock:
+            j = self._job(jid)
+            sm = j.get("sum") or {}
+            if sm.get("state") != "done" or not sm.get("text"):
+                raise BadRequest("Not ready yet.")
+            md = sm["text"]
+            stem = ("Pasted text" if j.get("text") else Path(j["name"]).stem) + "_summary"
+        if fmt == "pdf":
+            data, ctype = engine.summary_pdf(md, stem.replace("_summary", " — summary"),
+                                             "AI summary · made offline by Qwen3"), "application/pdf"
+        elif fmt == "md":
+            data, ctype = (md.strip() + "\n").encode("utf-8"), "text/markdown"
+        else:
+            data, ctype = engine.summary_plain(md).encode("utf-8-sig"), "text/plain"
+        return self._send(200, data, ctype, {
+            "Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(stem + '.' + fmt)}"})
+
     # ---------------------------------------------------------------- POST
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path
         if not self._allowed():
             return self._send(403, {"error": "forbidden"})
-        routes = {"/api/upload": self._upload, "/api/start": self._start, "/api/translate": self._translate,
+        routes = {"/api/upload": self._upload, "/api/text": self._text, "/api/start": self._start,
+                  "/api/translate": self._translate,
                   "/api/summarize": self._summarize, "/api/remove": self._remove}
         fn = routes.get(path)
         if not fn:
@@ -511,10 +536,32 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=conv, daemon=True).start()
         return {"id": jid, "name": name, "duration": dur}
 
+    def _text(self):
+        """Pasted text: becomes a 'recording' that's already done (no audio), ready to translate or summarise."""
+        req = self._json()
+        text = str(req.get("text") or "").strip()[:400_000]
+        segs = engine.split_text(text)
+        if not segs:
+            raise BadRequest("The text is empty.")
+        name = (re.sub(r"\s+", " ", text)[:40].strip() + ("…" if len(text) > 40 else "")) or "Pasted text"
+        jid = secrets.token_hex(6)
+        res = {"file": "Pasted text", "task": "transcribe", "segments": segs, "no_times": True, "duration": 0,
+               "speakers": [], "spoken_language": None, "language": None, "model": ""}
+        j = {"id": jid, "name": name, "path": None, "size": len(text.encode()), "duration": 0, "added": time.time(),
+             "state": "done", "stage": f"Pasted text · {len(segs)} sentences", "progress": 1.0, "media": None,
+             "result": res, "text": True, "hint": None}
+        jobs = self.server.jobs
+        with jobs.lock:
+            jobs.items[jid] = j
+            jobs.order.append(jid)
+        return {"id": jid}
+
     def _start(self):
         req = self._json()
         jobs = self.server.jobs
         j = self._job(req.get("id"))
+        if j.get("text"):
+            return {"ok": True}
         if j["state"] in ("queued", "working", "downloading"):
             return {"ok": True}
         model = req.get("model") if req.get("model") in MODELS else self._info()["model"]

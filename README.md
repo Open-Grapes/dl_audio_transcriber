@@ -72,7 +72,8 @@ Click **Share via Wi-Fi** (top right). A window shows a QR code and two addresse
 - see progress (several people can queue recordings; they're done one after another);
 - **play** the recording and tap any sentence to hear it, with the highlight following the audio;
 - **translate** it into any of 200 languages (original and translation shown sentence by sentence) and make an **AI summary**;
-- **download** PDF / TXT / SRT / VTT / JSON / CSV of the transcript or the translation.
+- use the **Translate** and **Summary** tabs at the top of the page for a finished recording or for **pasted text** (no recording needed);
+- **download** PDF / TXT / SRT / VTT / JSON / CSV of the transcript or the translation, and PDF / TXT / MD of the summary.
 
 This PC does all the work (with its GPU), so it must stay on with the app open; nothing goes to the internet. Sharing stays on until you click **Turn off** or close the app, and uploads are deleted then. There's no password, so anyone on the same Wi-Fi who knows the address can use it while sharing is on.
 
@@ -87,11 +88,11 @@ This PC does all the work (with its GPU), so it must stay on with the app open; 
    - *AI: Qwen3*: most natural wording, uses the sentences around each one for context.
    - *NLLB-200*: Meta's translator for 200 languages (best for Tamil and other less common languages), quick even without a GPU.
 4. Press **Translate** (nothing runs before that; it turns into **Stop** while working). The first time it offers to download the model it needs (one time).
-5. Click any sentence in either box: both highlight the pair, and for a transcript it plays from there (**Play / Pause** too); the highlight follows the audio. **Export** saves the translation with the formats and folder chosen on the Transcribe tab, as `name_zh-Hans.pdf`, `name_ja.srt` …
+5. Click any sentence in either box: both highlight the pair, and for a transcript it plays from there; the player bar under the boxes has play/pause, a slider and volume, like the Transcribe tab, and the highlight follows the audio. Tick the formats on the tab's own **Save as** row and press **Export**: it saves as `name_zh-Hans.pdf`, `name_ja.srt` … beside the recording (or in the folder picked with **Save to…**).
 
 ## Summary
 
-Pick what to summarise (the **Transcript** selected on the Transcribe tab, the **Translation**, or **Pasted text**), the language to **write in** and the **length**, then press **Summarise**. You get an overview, key points, key moments with their `(m:ss)` times and action items (when there are any). Long recordings are read part by part, then summarised as a whole. **Copy** or **Save as…** (.txt or .md). It's made by an AI model on your PC, so check important details against the transcript.
+Pick what to summarise (the **Transcript** selected on the Transcribe tab, the **Translation**, or **Pasted text**), the language to **write in** and the **length**, then press **Summarise**. You get an overview, key points, key moments with their `(m:ss)` times and action items (when there are any). Long recordings are read part by part, then summarised as a whole. **Copy** it, or tick **PDF** / **TXT** / **MD** on the tab's **Save as** row and press **Export**. It's made by an AI model on your PC, so check important details against the transcript.
 
 On an RTX 4090 a summary of a few minutes of speech takes a few seconds and translation about 3 sentences a second; without an NVIDIA GPU (and on a Mac) expect minutes for a long recording.
 
@@ -99,7 +100,7 @@ On an RTX 4090 a summary of a few minutes of speech takes a few seconds and tran
 
 None are included in the download (the translation and AI models download the first time you use the Translate or Summary tab). The first time you press Start with a model that isn't on the PC yet, the app asks: **Download <model>** (just that one) or **Download all** (every model, ~6.9 GB, so you can switch later without internet). Models are saved to `%LOCALAPPDATA%\dl_transcribe\models`. After that, everything runs offline.
 
-Pick a model from the **Model** drop list (downloaded ones are marked ✓), or press **Models…** to manage them: see speed, accuracy, size and status for each one; **Download recommended / selected / all**; **Check for updates** and **Install updates**; **Remove selected / all**; **Use selected model**; and **Open folder**. Downloads there can be cancelled and resume where they stopped.
+Pick a model from the **Model** drop list (downloaded ones are marked ✓), or press **Models…** (top right, on every tab) to manage them: see speed, accuracy, size and status for each one; **Download recommended / selected / all**; **Check for updates** and **Install updates**; **Remove selected / all**; **Use selected model**; and **Open folder**. Downloads there can be cancelled and resume where they stopped.
 
 ### GPU on other PCs
 

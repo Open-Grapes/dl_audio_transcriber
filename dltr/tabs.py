@@ -9,7 +9,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from . import engine, langs, models, theme
-from .common import APP_NAME, fmt_hms, lang_name, log, open_path
+from .common import APP_NAME, FORMATS, fmt_hms, lang_name, log, open_path
 from .theme import UI
 from .worker import Worker
 
@@ -19,6 +19,30 @@ TGT_CHOICES = [langs.choice(c) for c in langs.NLLB]
 ENGINES = {"auto": "Auto (best for these languages)", "ai": "AI: Qwen3 (most natural)",
            "nllb": "NLLB-200 (200 languages, fast)"}
 DETAIL = {"short": "Short", "normal": "Normal", "detailed": "Detailed"}
+TR_FORMATS = FORMATS
+
+
+def _format_row(parent, app, key, choices, default, export_cmd):
+    """“Save as [PDF] [TXT] …  [Export]” — each tab keeps its own ticks."""
+    saved = app.s.get(key)
+    on = [f for f in (saved if isinstance(saved, list) else default) if f in choices]
+    vars_ = {f: tk.BooleanVar(value=f in on) for f in choices}
+
+    def save(*_):
+        app.s[key] = [f for f, v in vars_.items() if v.get()]
+        app._save()
+    row = ttk.Frame(parent)
+    ttk.Label(row, text="Save as").pack(side="left", padx=(0, 6))
+    for f in choices:
+        vars_[f].trace_add("write", save)
+        ttk.Checkbutton(row, text=f.upper(), variable=vars_[f]).pack(side="left", padx=(0, 6))
+    btn = ttk.Button(row, text="Export", style="Accent.TButton", command=export_cmd, width=10)
+    btn.pack(side="right")
+    ttk.Button(row, text="Save to…", command=app.choose_outdir).pack(side="right", padx=6)
+    lbl = ttk.Label(row, style="Small.TLabel", text="Saves beside the recording (Transcripts folder), or in the "
+                                                     "folder picked with Save to…")
+    lbl.pack(side="right", padx=6)
+    return row, lambda: [f for f, v in vars_.items() if v.get()]
 NBSP = " "
 
 
@@ -47,17 +71,7 @@ def _short_code(code):
         langs.NLLB_TO_ISO.get(code) or code
 
 
-def split_text(text):
-    """Pasted text -> sentences (segments without times), keeping its paragraphs."""
-    segs = []
-    for para in re.split(r"\n\s*\n|\r?\n", text.strip()):
-        para = para.strip()
-        if not para:
-            continue
-        parts = [p for p in re.split(r"(?<=[.!?…])\s+|(?<=[。！？])", para) if p and p.strip()]
-        for k, p in enumerate(parts):
-            segs.append({"id": len(segs), "start": 0.0, "end": 0.0, "text": p.strip(), "para": k == 0})
-    return segs
+split_text = engine.split_text
 
 
 class AiRunner:
@@ -246,16 +260,15 @@ class TranslateTab(ttk.Frame):
         pane.add(self.top, weight=1)
         pane.add(self.bot, weight=1)
         ttk.Button(self.top.hdr, text="Copy", command=lambda: self.copy(False)).pack(side="right")
-        self.play_btn = ttk.Button(self.top.hdr, text="Play / Pause", command=self.play_pause)
-        self.play_btn.pack(side="right", padx=6)
-        ttk.Button(self.bot.hdr, text="Export", style="Accent.TButton", command=self.export, width=10).pack(
-            side="right")
-        ttk.Button(self.bot.hdr, text="Copy", command=lambda: self.copy(True)).pack(side="right", padx=6)
-        ttk.Checkbutton(self.bot.hdr, text="Show timestamps", variable=app.v_ts).pack(side="right", padx=6)
-        ttk.Label(self.bot.hdr, text="Export uses the formats and folder chosen on the Transcribe tab",
-                  style="Small.TLabel").pack(side="right", padx=10)
+        ttk.Button(self.bot.hdr, text="Copy", command=lambda: self.copy(True)).pack(side="right")
+        ttk.Checkbutton(self.bot.hdr, text="Show timestamps", variable=app.v_ts).pack(side="right", padx=10)
         for p in (self.top, self.bot):
             p.text.bind("<ButtonRelease-1>", self._click)
+        bar = app.player_bar(self, self.play_pause, self._seek)
+        bar.frame.pack(fill="x", pady=(8, 0))
+        row, self._fmts = _format_row(self, app, "tr_formats", TR_FORMATS, app._formats() or ["pdf", "txt"],
+                                      self.export)
+        row.pack(fill="x", pady=(10, 0))
         self.status = ttk.Label(self, style="Muted.TLabel", wraplength=900, justify="left")
         self.status.pack(fill="x", pady=(8, 0))
         self.status.bind("<Configure>", lambda e: self.status.configure(wraplength=max(e.width - 4, 100)))
@@ -533,6 +546,16 @@ class TranslateTab(ttk.Frame):
         else:
             app.toggle_play()
 
+    def _seek(self, t):
+        """The slider was let go at t: play the imported recording from there (switching to it if needed)."""
+        app = self.app
+        if not self.src or self.src["no_times"] or self.src.get("item") not in app.rows:
+            return True
+        if app.preview_item != self.src["item"]:
+            self._play(t)
+            return True
+        return False                     # the normal seek
+
     def follow(self, pos):
         """Called while the audio plays: highlight the matching pair."""
         if not self.src or self.src["no_times"] or self.src.get("item") != self.app.audio_item:
@@ -563,9 +586,9 @@ class TranslateTab(ttk.Frame):
         if not self.result:
             self._flash("Translate something first, then Export.")
             return
-        fmts = app._formats()
+        fmts = self._fmts()
         if not fmts:
-            self._flash("Tick at least one format under “Save as” on the Transcribe tab.")
+            self._flash("Tick at least one format next to “Save as” (below).")
             return
         res = self.result
         skipped = []
@@ -619,6 +642,8 @@ class SummaryTab(ttk.Frame):
         self.running = False
         self.text = ""
         self.stem = "summary"
+        self.src_item = None            # the Transcribe row the summary came from (for its folder)
+        self.subtitle = ""
         self.v_from = tk.StringVar(value="transcript")
         lang = s.get("sum_lang", "eng_Latn")
         self.v_lang = tk.StringVar(value=langs.choice(lang if lang in langs.NLLB else "eng_Latn"))
@@ -659,10 +684,12 @@ class SummaryTab(ttk.Frame):
         self.paste.text.configure(state="normal", cursor="xterm", height=8)
         self.out = _Pane(self, app, "Summary")
         self.out.pack(fill="both", expand=True)
-        ttk.Button(self.out.hdr, text="Save as…", command=self.save_as).pack(side="right")
-        ttk.Button(self.out.hdr, text="Copy", command=self.copy).pack(side="right", padx=6)
+        ttk.Button(self.out.hdr, text="Copy", command=self.copy).pack(side="right")
+        row, self._fmts = _format_row(self, app, "sum_formats", engine.SUMMARY_FORMATS, ["pdf", "txt"], self.export)
+        self.fmt_row = row
         ttk.Label(self.out.hdr, text="Made offline by the Qwen3 AI model. Check important details against the "
                                      "transcript.", style="Small.TLabel").pack(side="right", padx=10)
+        self.fmt_row.pack(fill="x", pady=(10, 0))
         self.status = ttk.Label(self, style="Muted.TLabel", wraplength=900, justify="left")
         self.status.pack(fill="x", pady=(8, 0))
         self.out.message("Choose what to summarise above and press  Summarise.\n\nYou get an overview, the key "
@@ -715,8 +742,7 @@ class SummaryTab(ttk.Frame):
         f = self.v_from.get()
         if f == "paste":
             text = self.paste.text.get("1.0", "end").strip()
-            times, self.stem = False, "Pasted text"
-            folder_hint = None
+            times, self.stem, self.src_item = False, "Pasted text", None
         elif f == "transcript":
             r = self._transcript()
             if not r:
@@ -724,6 +750,7 @@ class SummaryTab(ttk.Frame):
                 return
             res = app._view(r["result"])
             text, times, self.stem = engine.to_text(res, True), True, Path(r["file"]).stem
+            self.src_item = next((i for i, x in app.rows.items() if x is r), None)
         else:
             tr = self.tr.result
             if not tr:
@@ -732,6 +759,7 @@ class SummaryTab(ttk.Frame):
             text = engine.to_text(tr, not tr.get("no_times"))
             times = not tr.get("no_times")
             self.stem = Path(str(tr["file"])).stem + f"_{_short_code(tr['_tgt'])}"
+            self.src_item = self.tr.src.get("item") if self.tr.src else None
         if not text.strip():
             self._flash("There's no text to summarise.")
             return
@@ -748,6 +776,7 @@ class SummaryTab(ttk.Frame):
         detail = next((k for k, v in DETAIL.items() if v == self.v_detail.get()), "normal")
         jobs.append({"kind": "summarize", "id": "sum", "text": text, "lang": lang, "detail": detail, "times": times})
         self.text = ""
+        self.subtitle = f"AI summary ({self.v_detail.get().lower()}) in {langs.name(lang)} · made offline by Qwen3"
         self.out.message("Reading …")
         self._busy(True)
         self.progress["value"] = 0
@@ -788,7 +817,7 @@ class SummaryTab(ttk.Frame):
             self.progress["value"] = 1.0
             self.text = text
             self._show(text)
-            self._flash(f"Summary ready ({fmt_hms(took)}). Copy or Save as… to keep it.")
+            self._flash(f"Summary ready ({fmt_hms(took)}). Copy it, or tick the formats below and Export.")
         elif kind in ("fail", "died"):
             msg = a[1] if kind == "fail" else "The AI model stopped unexpectedly."
             self.app.ai.stop()
@@ -812,15 +841,7 @@ class SummaryTab(ttk.Frame):
         t.configure(state="disabled")
 
     def _plain(self):
-        out = []
-        for ln in self.text.splitlines():
-            s = ln.rstrip().replace("**", "")
-            if re.match(r"^#{1,4}\s", s):
-                s = re.sub(r"^#{1,4}\s*", "", s).upper()
-            elif re.match(r"^\s*[-*•]\s+", s):
-                s = "• " + re.sub(r"^\s*[-*•]\s+", "", s)
-            out.append(s)
-        return "\n".join(out).strip() + "\n"
+        return engine.summary_plain(self.text)
 
     def copy(self):
         if not self.text:
@@ -829,18 +850,32 @@ class SummaryTab(ttk.Frame):
         self.app.clipboard_append(self._plain())
         self._flash("Summary copied to the clipboard.")
 
-    def save_as(self):
+    def export(self):
+        app = self.app
         if not self.text:
             self._flash("Make a summary first.")
             return
-        p = filedialog.asksaveasfilename(parent=self.app, title="Save the summary", defaultextension=".txt",
-                                         initialfile=f"{self.stem}_summary.txt",
-                                         filetypes=[("Text", "*.txt"), ("Markdown", "*.md")])
-        if not p:
+        fmts = self._fmts()
+        if not fmts:
+            self._flash("Tick at least one format next to “Save as” (below).")
             return
-        try:
-            Path(p).write_text(self.text.strip() + "\n" if p.lower().endswith(".md") else self._plain(),
-                               encoding="utf-8")
-            self._flash(f"Saved {Path(p).name} to {Path(p).parent}")
-        except OSError as e:
-            self._flash(f"Couldn't save: {e}")
+        if self.src_item in app.rows:
+            folder = app._outdir_for(app.rows[self.src_item])
+        else:
+            folder = app._custom_outdir()
+            if not folder:
+                d = filedialog.askdirectory(parent=app, title="Save the summary in …")
+                if not d:
+                    return
+                folder = Path(d)
+        md, stem, title, sub = self.text, f"{self.stem}_summary", f"{self.stem} — summary", self.subtitle
+
+        def run():
+            try:
+                paths = engine.save_summary(md, fmts, folder, stem, title, sub)
+                msg = f"Exported {len(paths)} file{'s' * (len(paths) != 1)} to {folder}"
+                self.after(0, lambda: (self._flash(msg), open_path(paths[0], reveal=True) if paths else None))
+            except Exception as e:
+                log(f"summary export failed: {e}")
+                self.after(0, lambda: self._flash(f"Export problem: {e}"))
+        threading.Thread(target=run, daemon=True).start()

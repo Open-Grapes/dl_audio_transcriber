@@ -222,7 +222,9 @@ def summarize(text, lang="eng_Latn", detail="normal", times=True, progress=None,
             sys_ = ("You take notes on a part of a transcript. Write concise bullet notes in English of everything "
                     "important: topics, facts, numbers, names, decisions, tasks." +
                     (" Keep the (m:ss) time of key moments at the start of a note." if times else ""))
-            notes.append(_generate(model, tok, sys_, p, 700))
+            lo, hi = i / (len(parts) + 1), (i + 1) / (len(parts) + 1)
+            notes.append(_generate(model, tok, sys_, p, 700, cancel=cancel,
+                                   on_step=_stepper(progress, lo, hi, 350, f"Reading part {i + 1} of {len(parts)} …")))
         source = "\n".join(notes)
         intro = "These are notes taken from a long transcript, in order."
     else:
@@ -239,7 +241,12 @@ def summarize(text, lang="eng_Latn", detail="normal", times=True, progress=None,
               "anything. Use this format:\n" + fmt)
     user = (f"{intro}\n\n{source}\n\n---\nNow write the summary. Write it entirely in {lang_name} "
             f"(translate the headings too), even if the text above is in another language.")
-    out = _generate(model, tok, system, user, 1500, on_text, cancel)
+    base = len(parts) / (len(parts) + 1) if len(parts) > 1 else 0.05
+    src_n = len(tok.encode(source, add_special_tokens=False).ids)
+    expect = min({"short": 300, "normal": 550, "detailed": 950}.get(detail, 550),   # typical length in tokens
+                 120 + src_n // (3 if detail == "detailed" else 4))               # (shorter for a short text)
+    out = _generate(model, tok, system, user, 1500, on_text, cancel,
+                    on_step=_stepper(progress, base, 1.0, expect, "Writing the summary …"))
     out = _drop_empty_sections(out)
     if on_text:
         on_text(out)
@@ -262,7 +269,20 @@ def _drop_empty_sections(text):
     return "\n\n".join(k for k in keep if k)
 
 
-def _generate(model, tok, system, user, max_new, on_text=None, cancel=None):
+def _stepper(progress, lo, hi, expect, text):
+    """Progress while the model writes: moves from lo towards hi as tokens come out (the final length isn't
+    known, so it eases in near the end instead of stopping at a fixed point)."""
+    if not progress:
+        return None
+
+    def step(n):
+        f = n / expect
+        f = f * 0.9 if f <= 1 else 0.9 + 0.09 * (1 - 1 / f)     # 90 % at the usual length, then creeps to 99 %
+        progress(lo + (hi - lo) * min(f, 0.99), text)
+    return step
+
+
+def _generate(model, tok, system, user, max_new, on_text=None, cancel=None, on_step=None):
     prompt = _chat_tokens(tok, system, user)
     ids = []
     last = 0
@@ -271,9 +291,12 @@ def _generate(model, tok, system, user, max_new, on_text=None, cancel=None):
         if cancel is not None and cancel.is_set():
             raise Cancelled()
         ids.append(step.token_id)
-        if on_text and len(ids) - last >= 8:
+        if len(ids) - last >= 8:
             last = len(ids)
-            on_text(tok.decode(ids, skip_special_tokens=True))
+            if on_text:
+                on_text(tok.decode(ids, skip_special_tokens=True))
+            if on_step:
+                on_step(len(ids))
     text = tok.decode(ids, skip_special_tokens=True).strip()
     if on_text:
         on_text(text)

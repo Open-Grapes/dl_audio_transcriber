@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -454,9 +455,8 @@ else:                                                    # macOS
                   ("AppleSDGothicNeo.ttc", 0), ("Apple Symbols.ttf", 0)]
 
 
-def to_pdf(result, timestamps=False):
-    """A clean, printable transcript (bytes)."""
-    timestamps = timestamps and not result.get("no_times")
+def _new_pdf():
+    """An A4 FPDF with the system fonts loaded. Returns (pdf, main font name)."""
     from fpdf import FPDF
     import logging
     logging.getLogger("fontTools").setLevel(logging.ERROR)   # chatty about font subsetting
@@ -483,6 +483,13 @@ def to_pdf(result, timestamps=False):
             pass
     else:
         main = "helvetica"
+    return pdf, main
+
+
+def to_pdf(result, timestamps=False):
+    """A clean, printable transcript (bytes)."""
+    timestamps = timestamps and not result.get("no_times")
+    pdf, main = _new_pdf()
     pdf.set_title(Path(result["file"]).stem)
     pdf.set_creator("dl_transcribe")
     pdf.add_page()
@@ -518,6 +525,95 @@ def to_pdf(result, timestamps=False):
                     pdf.set_text_color(25, 25, 25)
                     par.write(s["text"] + (" " if timestamps or j else ""))
     return bytes(pdf.output())
+
+
+def summary_plain(md):
+    """The AI summary's simple markdown as plain text (headings in capitals, • bullets)."""
+    out = []
+    for ln in md.splitlines():
+        s = ln.rstrip().replace("**", "")
+        if re.match(r"^#{1,4}\s", s):
+            s = re.sub(r"^#{1,4}\s*", "", s).upper()
+        elif re.match(r"^\s*[-*•]\s+", s):
+            s = "• " + re.sub(r"^\s*[-*•]\s+", "", s)
+        out.append(s)
+    return "\n".join(out).strip() + "\n"
+
+
+def summary_pdf(md, title, subtitle=""):
+    """The AI summary as a printable PDF (bytes)."""
+    pdf, main = _new_pdf()
+    pdf.set_title(title)
+    pdf.set_creator("dl_transcribe")
+    pdf.add_page()
+    pdf.set_font(main, size=18)
+    pdf.set_text_color(20, 20, 20)
+    pdf.multi_cell(0, 9, title, new_x="LMARGIN", new_y="NEXT")
+    if subtitle:
+        pdf.set_font(main, size=9)
+        pdf.set_text_color(120, 120, 120)
+        pdf.multi_cell(0, 6, subtitle, new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(3)
+    for ln in md.splitlines():
+        s = ln.strip().replace("**", "")
+        if not s:
+            continue
+        if re.match(r"^#{1,4}\s", s):
+            pdf.ln(2)
+            pdf.set_font(main, size=13)
+            pdf.set_text_color(37, 99, 235)
+            pdf.multi_cell(0, 7, re.sub(r"^#{1,4}\s*", "", s), new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(1)
+        elif re.match(r"^[-*•]\s+", s):
+            pdf.set_font(main, size=11)
+            pdf.set_text_color(25, 25, 25)
+            x = pdf.get_x()
+            pdf.cell(6, 6.2, "•")
+            pdf.multi_cell(0, 6.2, re.sub(r"^[-*•]\s+", "", s), new_x="LMARGIN", new_y="NEXT")
+            pdf.set_x(x)
+            pdf.ln(0.8)
+        else:
+            pdf.set_font(main, size=11)
+            pdf.set_text_color(25, 25, 25)
+            pdf.multi_cell(0, 6.2, s, new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(1.5)
+    return bytes(pdf.output())
+
+
+SUMMARY_FORMATS = ("pdf", "txt", "md")
+
+
+def save_summary(md, formats, folder, stem, title, subtitle=""):
+    """Write the summary in the chosen formats. Returns the paths written."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for fmt in formats:
+        p = folder / f"{stem}.{fmt}"
+        try:
+            if fmt == "pdf":
+                p.write_bytes(summary_pdf(md, title, subtitle))
+            elif fmt == "md":
+                p.write_text(md.strip() + "\n", encoding="utf-8")
+            else:
+                p.write_text(summary_plain(md), encoding="utf-8-sig")
+        except PermissionError:
+            raise RuntimeError(f"{p.name} is open in another program (close it and export again).") from None
+        paths.append(p)
+    return paths
+
+
+def split_text(text):
+    """Pasted text -> sentences (segments without times), keeping its paragraphs."""
+    segs = []
+    for para in re.split(r"\n\s*\n|\r?\n", text.strip()):
+        para = para.strip()
+        if not para:
+            continue
+        parts = [p for p in re.split(r"(?<=[.!?…])\s+|(?<=[。！？])", para) if p and p.strip()]
+        for k, p in enumerate(parts):
+            segs.append({"id": len(segs), "start": 0.0, "end": 0.0, "text": p.strip(), "para": k == 0})
+    return segs
 
 
 WRITERS = {"txt": to_text, "srt": to_srt, "vtt": to_vtt, "json": to_json, "csv": to_csv, "pdf": to_pdf}

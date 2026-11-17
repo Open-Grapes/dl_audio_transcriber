@@ -67,12 +67,19 @@ audio{width:100%;margin:6px 0}
 .dl a{font-size:13px;padding:6px 10px;min-height:32px}
 .hidden{display:none!important}
 .back{margin-bottom:6px}
+.htabs{display:flex;gap:6px;margin:0 0 14px;overflow-x:auto}
+.htabs button{border-radius:20px;padding:6px 16px;min-height:36px}
+.htabs button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+textarea{font:inherit;width:100%;min-height:150px;border:1px solid var(--line);background:var(--field);color:var(--text);
+border-radius:8px;padding:8px;resize:vertical;margin-top:10px}
 </style>
 </head>
 <body>
 <header><img src="/icon.png" alt=""><div class="t">dl_transcribe</div><div class="s" id="pc">connecting…</div></header>
 <main>
+  <div class="htabs" id="htabs"><button data-h="tx" class="on">Transcribe</button><button data-h="tr">Translate</button><button data-h="sm">Summary</button></div>
   <section id="home">
+   <div id="h-tx">
     <div class="card">
       <h2>Add a recording</h2>
       <div class="drop" id="drop">Tap to choose audio or video<br><span class="small">mp3 · m4a · wav · mp4 · mov · voice memos · and more</span></div>
@@ -88,7 +95,32 @@ audio{width:100%;margin:6px 0}
       </div>
       <p class="small muted" style="margin:10px 0 0">Your files are sent to the PC running dl_transcribe on this Wi-Fi and processed there (nothing goes to the internet). Press <b>Start</b> on a recording to transcribe it.</p>
     </div>
-    <div class="card"><h2>Recordings</h2><div id="jobs"><p class="muted small">Nothing yet.</p></div></div>
+   </div>
+   <div id="h-tr" class="hidden"><div class="card">
+      <h2>Translate</h2>
+      <div class="row"><label class="small muted">What <select id="h-trsrc"><option value="">Pasted text (type or paste below)</option></select></label></div>
+      <textarea id="h-trtext" placeholder="Paste or type the text to translate here"></textarea>
+      <div class="row" style="margin-top:10px">
+        <label class="small muted">To <select id="h-tgt"></select></label>
+        <label class="small muted">Translator <select id="h-eng">
+          <option value="auto">Auto (best for these languages)</option><option value="ai">AI: Qwen3 (most natural)</option>
+          <option value="nllb">NLLB-200 (200 languages)</option></select></label>
+        <button class="primary" id="h-go-tr">Translate</button>
+      </div>
+      <p class="small muted" style="margin:10px 0 0">Pick a finished recording (its timestamps and speakers are kept) or paste any text. The result opens with the original and translation side by side.</p>
+   </div></div>
+   <div id="h-sm" class="hidden"><div class="card">
+      <h2>Summary</h2>
+      <div class="row"><label class="small muted">What <select id="h-smsrc"><option value="">Pasted text (type or paste below)</option></select></label></div>
+      <textarea id="h-smtext" placeholder="Paste or type the text to summarise here"></textarea>
+      <div class="row" style="margin-top:10px">
+        <label class="small muted">Write in <select id="h-slang"></select></label>
+        <label class="small muted">Length <select id="h-sdet"><option value="short">Short</option><option value="normal" selected>Normal</option><option value="detailed">Detailed</option></select></label>
+        <button class="primary" id="h-go-sm">Summarise</button>
+      </div>
+      <p class="small muted" style="margin:10px 0 0">An overview, the key points, key moments and action items, written offline by an AI model on the PC.</p>
+   </div></div>
+    <div class="card"><h2>Recordings &amp; texts</h2><div id="jobs"><p class="muted small">Nothing yet.</p></div></div>
   </section>
 
   <section id="detail" class="hidden">
@@ -98,11 +130,11 @@ audio{width:100%;margin:6px 0}
       <div class="small muted" id="d-info"></div>
       <audio id="player" controls preload="metadata"></audio>
       <div id="d-work"><div class="small muted" id="d-stage"></div><div class="bar"><i id="d-bar"></i></div></div>
-      <div class="tabs"><button data-t="t" class="on">Transcript</button><button data-t="tr">Translate</button><button data-t="sm">Summary</button></div>
+      <div class="tabs"><button data-t="t" class="on" id="tab-t-btn">Transcript</button><button data-t="tr">Translate</button><button data-t="sm">Summary</button></div>
 
       <div id="tab-t">
         <div class="row small" style="margin-bottom:6px">
-          <label class="cb"><input type="checkbox" id="showts" checked> Timestamps</label>
+          <label class="cb" id="showts-l"><input type="checkbox" id="showts" checked> Timestamps</label>
           <label class="cb"><input type="checkbox" id="showspk" checked> Speakers</label>
         </div>
         <div class="tx" id="tx"></div>
@@ -132,6 +164,7 @@ audio{width:100%;margin:6px 0}
         <div id="sm-work" class="hidden"><div class="small muted" id="sm-stage"></div><div class="bar"><i id="sm-bar"></i></div></div>
         <div class="sum" id="sumx"></div>
         <div class="row" style="margin-top:10px"><button id="copy-sm" class="hidden">Copy summary</button></div>
+        <div class="dl" id="dl-sm" style="margin-top:10px"></div>
         <p class="small muted">Made by an AI model on the PC — check important details against the transcript.</p>
       </div>
     </div>
@@ -162,14 +195,59 @@ async function init() {
   const M = $("#model"); for (const m of INFO.models) M.add(new Option(m.label + (m.installed ? "" : "  (downloads first)"), m.key));
   M.value = store.get("model", INFO.model); if (!M.value) M.value = INFO.model;
   $("#mixed").checked = store.get("mixed", false); $("#speakers").checked = store.get("speakers", INFO.speakers);
-  for (const sel of ["#tgt", "#slang"]) { const S = $(sel); for (const t of INFO.targets) S.add(new Option(t.name, t.code)); }
-  $("#tgt").value = store.get("tgt", "eng_Latn"); $("#slang").value = store.get("slang", "eng_Latn");
-  $("#eng").value = store.get("eng", "auto");
-  for (const [id, key] of [["#lang","lang"],["#model","model"],["#tgt","tgt"],["#slang","slang"],["#eng","eng"]])
-    $(id).addEventListener("change", e => store.set(key, e.target.value));
+  for (const sel of ["#tgt", "#slang", "#h-tgt", "#h-slang"]) { const S = $(sel); for (const t of INFO.targets) S.add(new Option(t.name, t.code)); }
+  $("#tgt").value = $("#h-tgt").value = store.get("tgt", "eng_Latn"); $("#slang").value = $("#h-slang").value = store.get("slang", "eng_Latn");
+  $("#eng").value = $("#h-eng").value = store.get("eng", "auto");
+  $("#sdet").value = $("#h-sdet").value = store.get("sdet", "normal");
+  // the same choice in the home tabs and in a recording stays in step
+  const twins = {"#tgt": "#h-tgt", "#h-tgt": "#tgt", "#slang": "#h-slang", "#h-slang": "#slang", "#eng": "#h-eng", "#h-eng": "#eng", "#sdet": "#h-sdet", "#h-sdet": "#sdet"};
+  for (const [id, key] of [["#lang","lang"],["#model","model"],["#tgt","tgt"],["#slang","slang"],["#eng","eng"],["#h-tgt","tgt"],["#h-slang","slang"],["#h-eng","eng"],["#sdet","sdet"],["#h-sdet","sdet"]])
+    $(id).addEventListener("change", e => { store.set(key, e.target.value); if (twins[id]) $(twins[id]).value = e.target.value; });
+  homeTab(store.get("htab", "tx"));
   for (const [id, key] of [["#mixed","mixed"],["#speakers","speakers"]]) $(id).addEventListener("change", e => store.set(key, e.target.checked));
   poll();
   if (location.hash.length > 1) open(location.hash.slice(1));
+}
+
+// ---------------------------------------------------------------- home tabs (Transcribe / Translate / Summary)
+function homeTab(h) {
+  for (const b of document.querySelectorAll("#htabs button")) b.classList.toggle("on", b.dataset.h === h);
+  for (const t of ["tx", "tr", "sm"]) $("#h-" + t).classList.toggle("hidden", t !== h);
+  store.set("htab", h);
+}
+for (const b of document.querySelectorAll("#htabs button")) b.onclick = () => { if (CUR) goHome(); homeTab(b.dataset.h); };
+for (const [sel, ta] of [["#h-trsrc", "#h-trtext"], ["#h-smsrc", "#h-smtext"]])
+  $(sel).onchange = () => $(ta).classList.toggle("hidden", !!$(sel).value);
+
+async function sourceId(sel, ta) {
+  if ($(sel).value) return $(sel).value;
+  const text = $(ta).value.trim();
+  if (!text) throw new Error("Paste or type some text first (or pick a recording).");
+  const r = await api("/api/text", {text});
+  $(ta).value = "";
+  return r.id;
+}
+$("#h-go-tr").onclick = async e => {
+  const b = e.target; b.disabled = true;
+  try { const id = await sourceId("#h-trsrc", "#h-trtext"); await api("/api/translate", {id, tgt: $("#h-tgt").value, engine: $("#h-eng").value}); open(id, "tr"); poll(); }
+  catch (err) { alert(err.message); } finally { b.disabled = false; }
+};
+$("#h-go-sm").onclick = async e => {
+  const b = e.target; b.disabled = true;
+  try { const id = await sourceId("#h-smsrc", "#h-smtext"); await api("/api/summarize", {id, lang: $("#h-slang").value, detail: $("#h-sdet").value, which: "transcript"}); open(id, "sm"); poll(); }
+  catch (err) { alert(err.message); } finally { b.disabled = false; }
+};
+function fillSources(jobs) {
+  const done = jobs.filter(j => j.state === "done");
+  for (const sel of ["#h-trsrc", "#h-smsrc"]) {
+    const S = $(sel), keep = S.value, want = done.map(j => j.id).join(",");
+    if (S.dataset.ids === want) continue;
+    S.dataset.ids = want;
+    while (S.options.length > 1) S.remove(1);
+    for (const j of done) S.add(new Option((j.text ? "Text: " : "") + j.name, j.id));
+    S.value = done.some(j => j.id === keep) ? keep : "";
+    S.onchange();
+  }
 }
 
 // ---------------------------------------------------------------- upload
@@ -218,7 +296,7 @@ async function poll() {
     let el = box.querySelector(`.job[data-id="${j.id}"]`);
     if (!el || el.dataset.k !== kind) {
       const fresh = document.createElement("div"); fresh.className = "job"; fresh.dataset.id = j.id; fresh.dataset.k = kind;
-      fresh.innerHTML = `<div class="n">${esc(j.name)} <span class="small muted">${j.duration ? hms(j.duration) : ""}</span></div>
+      fresh.innerHTML = `<div class="n">${j.text ? '<span class="small muted">Text · </span>' : ""}${esc(j.name)} <span class="small muted">${j.duration ? hms(j.duration) : ""}</span></div>
         <span class="badge"></span>
         ${kind.includes("s") ? `<button class="primary" data-a="start">Start</button>` : ""}
         ${j.state === "done" ? `<button class="primary" data-a="open">Open</button>` : `<button data-a="open">View</button>`}
@@ -241,6 +319,7 @@ async function poll() {
     prev = el;
   }
   for (const el of [...box.querySelectorAll(".job")]) if (!seen.has(el.dataset.id)) el.remove();
+  fillSources(d.jobs);
   const busy = d.jobs.some(j => BUSY.has(j.state));
   pollTimer = setTimeout(poll, busy ? 1500 : 4000);
   if (CUR) refresh();
@@ -253,7 +332,12 @@ async function start(id) {
 }
 
 // ---------------------------------------------------------------- detail
-function open(id) {
+function showTab(t) {
+  for (const x of document.querySelectorAll(".tabs button")) x.classList.toggle("on", x.dataset.t === t);
+  for (const k of ["t", "tr", "sm"]) $("#tab-" + k).classList.toggle("hidden", k !== t);
+}
+function open(id, tab) {
+  showTab(tab || "t");
   CUR = id; renderedFor = ""; trRendered = ""; lastSum = ""; NOW = -1; DET = null;
   location.hash = id;
   $("#home").classList.add("hidden"); $("#detail").classList.remove("hidden");
@@ -262,11 +346,9 @@ function open(id) {
   window.scrollTo(0, 0);
   refresh();
 }
-$("#back").onclick = () => { CUR = null; location.hash = ""; $("#player").pause(); $("#detail").classList.add("hidden"); $("#home").classList.remove("hidden"); poll(); };
-for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => {
-  for (const x of document.querySelectorAll(".tabs button")) x.classList.toggle("on", x === b);
-  for (const t of ["t", "tr", "sm"]) $("#tab-" + t).classList.toggle("hidden", t !== b.dataset.t);
-};
+function goHome() { CUR = null; location.hash = ""; $("#player").pause(); $("#detail").classList.add("hidden"); $("#home").classList.remove("hidden"); poll(); }
+$("#back").onclick = goHome;
+for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => showTab(b.dataset.t);
 
 let refreshing = false;
 async function refresh() {
@@ -275,7 +357,11 @@ async function refresh() {
   refreshing = false;
   const d = DET;
   $("#d-name").textContent = d.name;
-  $("#d-info").textContent = [d.duration ? hms(d.duration) : "", d.language || "", d.speakers.length ? `${d.speakers.length} speaker${d.speakers.length > 1 ? "s" : ""}` : "", d.took ? `took ${hms(d.took)}` : ""].filter(Boolean).join(" · ");
+  $("#player").classList.toggle("hidden", !!d.text);
+  $("#showts-l").classList.toggle("hidden", !!d.text);
+  $("#tab-t-btn").textContent = d.text ? "Text" : "Transcript";
+  $("#back").textContent = "← All recordings & texts";
+  $("#d-info").textContent = d.text ? `Pasted text · ${d.segments.length} sentences` : [d.duration ? hms(d.duration) : "", d.language || "", d.speakers.length ? `${d.speakers.length} speaker${d.speakers.length > 1 ? "s" : ""}` : "", d.took ? `took ${hms(d.took)}` : ""].filter(Boolean).join(" · ");
   const P = $("#player");
   if (d.media && P.dataset.src !== d.media) { P.dataset.src = d.media; P.src = d.media; }
   const busy = BUSY.has(d.state) || d.state === "uploaded" || d.state === "failed";
@@ -304,7 +390,7 @@ function paragraphs(segs, names) {
 function renderTranscript() {
   const d = DET, tx = $("#tx");
   if (!d.segments.length) { tx.innerHTML = `<p class="muted">${d.state === "done" ? "No speech found." : "The transcript appears here."}</p>`; return; }
-  const ts = $("#showts").checked, names = $("#showspk").checked && d.speakers.length ? d.speakers : null;
+  const ts = $("#showts").checked && !d.text, names = $("#showspk").checked && d.speakers.length ? d.speakers : null;
   let html = "", prevSpk = undefined;
   for (const para of paragraphs(d.segments, names)) {
     const sp = para[0].s.speaker;
@@ -319,6 +405,7 @@ $("#trx").onclick = e => { const s = e.target.closest("[data-i]"); if (s) seek(+
 
 function seek(i) {
   if (!DET || !DET.segments[i]) return;
+  if (DET.text) { mark(i, false); return; }
   const P = $("#player"); P.currentTime = DET.segments[i].start + 0.01; P.play().catch(() => {});
   mark(i, true);
 }
@@ -337,8 +424,9 @@ $("#player").ontimeupdate = () => {
 function renderDownloads(sel, which, ready) {
   const box = $(sel);
   if (!ready) { box.innerHTML = ""; return; }
-  const ts = $("#showts").checked ? 1 : 0, sp = $("#showspk").checked ? 1 : 0;
-  box.innerHTML = `<span class="small muted" style="align-self:center">Download:</span>` + INFO.formats.map(f =>
+  const ts = $("#showts").checked && !DET.text ? 1 : 0, sp = $("#showspk").checked ? 1 : 0;
+  const fmts = which === "summary" ? ["pdf", "txt", "md"] : DET.text ? INFO.formats.filter(f => !["srt", "vtt", "csv"].includes(f)) : INFO.formats;
+  box.innerHTML = `<span class="small muted" style="align-self:center">Download:</span>` + fmts.map(f =>
     `<a class="btn" href="/api/export/${CUR}?fmt=${f}&which=${which}&ts=${ts}&speakers=${sp}" download>${f.toUpperCase()}</a>`).join("");
 }
 
@@ -355,7 +443,7 @@ function renderTranslation() {
   if (!tr || !tr.texts) { if (d.state !== "done") $("#trx").innerHTML = `<p class="muted small">Transcribe the recording first.</p>`; else if (!tr) $("#trx").innerHTML = ""; renderDownloads("#dl-tr", "translation", false); return; }
   const key = tr.state + ":" + tr.texts.filter(t => t !== null).length + ":" + $("#showts").checked + $("#showspk").checked;
   if (key === trRendered) return; trRendered = key;
-  const ts = $("#showts").checked, names = $("#showspk").checked && d.speakers.length ? d.speakers : null;
+  const ts = $("#showts").checked && !d.text, names = $("#showspk").checked && d.speakers.length ? d.speakers : null;
   let html = `<div class="small muted" style="margin-bottom:4px">${esc(tr.target_name)}${tr.engine ? " · " + (tr.engine === "ai" ? "AI: Qwen3" : "NLLB-200") : ""}</div>`, prev;
   d.segments.forEach((s, i) => {
     if (names && s.speaker !== prev) html += `<div class="spk">${esc(names[s.speaker] || "Speaker " + (s.speaker + 1))}</div>`;
@@ -392,6 +480,7 @@ function renderSummary() {
   const text = sm ? sm.text || "" : "";
   if (text !== lastSum) { lastSum = text; $("#sumx").innerHTML = text ? md(text) : (d.state === "done" ? "" : `<p class="muted small">Transcribe the recording first.</p>`); }
   $("#copy-sm").classList.toggle("hidden", !(sm && sm.state === "done"));
+  renderDownloads("#dl-sm", "summary", !!(sm && sm.state === "done"));
 }
 $("#copy-sm").onclick = async () => {
   const text = (DET && DET.sum && DET.sum.text || "").replace(/\*\*/g, "").replace(/^#{1,4}\s*/gm, "").replace(/^\s*[-*]\s+/gm, "• ");

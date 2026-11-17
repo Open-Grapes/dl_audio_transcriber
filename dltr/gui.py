@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import threading
+from types import SimpleNamespace
 import time
 import tkinter as tk
 from pathlib import Path
@@ -211,12 +212,17 @@ class App(BaseTk):
         self.theme_btn.pack(side="left", padx=(0, 10))
         ttk.Label(top, text="Offline transcription — your files never leave this PC", style="Title.TLabel").pack(
             side="left")
-        self.device_lbl = ttk.Label(top, text="Checking GPU …", style="Muted.TLabel")
-        self.update_btn = ttk.Button(top, text="Check for updates", command=self.open_updates)
+        right = ttk.Frame(top)
+        right.pack(side="right")
+        btns = ttk.Frame(right)
+        btns.pack(anchor="e")
+        self.update_btn = ttk.Button(btns, text="Check for updates", command=self.open_updates)
         self.update_btn.pack(side="right", padx=(10, 0))
-        self.wifi_btn = ttk.Button(top, text="Share via Wi-Fi", command=self.open_wifi)
+        self.wifi_btn = ttk.Button(btns, text="Share via Wi-Fi", command=self.open_wifi)
         self.wifi_btn.pack(side="right", padx=(10, 0))
-        self.device_lbl.pack(side="right")
+        ttk.Button(btns, text="Models…", command=self.open_models).pack(side="right")
+        self.device_lbl = ttk.Label(right, text="Checking GPU …", style="Muted.TLabel")
+        self.device_lbl.pack(anchor="e", pady=(4, 0))
         self.warn_lbl = ttk.Label(self, style="Warn.TLabel", wraplength=900, justify="left")
 
         # three tabs: Transcribe (the original window), Translate, Summary
@@ -246,7 +252,6 @@ class App(BaseTk):
         self.model_box = ttk.Combobox(mrow, textvariable=self.v_model, values=[self._label(k) for k in MODELS],
                                       state="readonly", width=52)
         self.model_box.pack(side="left", fill="x", expand=True)
-        ttk.Button(mrow, text="Models…", command=self.open_models).pack(side="left", padx=(6, 0))
         self.model_box.bind("<<ComboboxSelected>>", lambda e: self.model_box.selection_clear())
         ttk.Label(opt, text="Language").grid(row=0, column=2, sticky="w", padx=(14, 6))
         lang = ttk.Combobox(opt, textvariable=self.v_lang, values=LANG_CHOICES, width=26)
@@ -365,30 +370,11 @@ class App(BaseTk):
         self.bind_all("<F3>", lambda e: self._find_step(1))
         self._hdr = hdr
 
-        # player bar (like a media player: play/pause, time, seek, volume)
-        pl = ttk.Frame(pf)
-        pl.pack(side="bottom", fill="x", pady=(6, 0))
-        self.play_btn = ttk.Button(pl, text=I_PLAY, command=self.toggle_play, style="Play.TButton", takefocus=False)
-        self.play_btn.pack(side="left")
-        self.time_lbl = ttk.Label(pl, text="0:00 / 0:00", style="Time.TLabel", width=17, anchor="center")
-        self.time_lbl.pack(side="left", padx=6)
-        self.vol = ttk.Scale(pl, from_=0, to=1, variable=self.v_vol, length=120, takefocus=False)
-        self.vol.pack(side="right")
-        self.vol_pct = ttk.Label(pl, style="Time.TLabel", width=4, anchor="e")
-        self.vol_pct.pack(side="right", padx=(0, 4))
-        self.vol_lbl = ttk.Label(pl, text=I_VOL[2], cursor="hand2", font=(ICON_FONT, 12))
-        self.vol_lbl.pack(side="right", padx=(12, 2))
-        self.vol_lbl.bind("<Button-1>", lambda e: self._mute())
-        # Tk's sliders jump a whole step (here: 0 % or 100 %) when the bar is clicked;
-        # make a click put the knob right where you click, and dragging follow the mouse.
-        for ev in ("<Button-1>", "<B1-Motion>"):
-            self.vol.bind(ev, self._vol_drag)
-        self.vol.bind("<MouseWheel>", lambda e: self._vol_set(self.v_vol.get() + (0.05 if e.delta > 0 else -0.05)))
-        self.seek = ttk.Scale(pl, from_=0, to=1, variable=self.v_pos, takefocus=False)
-        self.seek.pack(side="left", fill="x", expand=True, padx=(4, 0))
-        for ev in ("<Button-1>", "<B1-Motion>"):
-            self.seek.bind(ev, self._seek_drag)
-        self.seek.bind("<ButtonRelease-1>", self._seek_release)
+        # player bar (like a media player: play/pause, time, seek, volume); the Translate tab has one too
+        self.bars = []
+        b = self.player_bar(pf, self.toggle_play)
+        b.frame.pack(side="bottom", fill="x", pady=(6, 0))
+        self.play_btn, self.time_lbl, self.seek = b.play, b.time, b.seek
 
         body = ttk.Frame(pf)
         body.pack(fill="both", expand=True)
@@ -416,8 +402,6 @@ class App(BaseTk):
         for w in (self.tree, self.text):
             w.bind("<space>", lambda e: None if self.editing else (self.toggle_play(), "break")[1])
         self._player_ui()
-        self.vol_lbl.configure(text=I_VOL[2])
-        self.vol_pct.configure(text=f"{self.player.volume:.0%}")
 
         # Translate + Summary tabs (dltr/tabs.py)
         from .tabs import AiRunner, SummaryTab, TranslateTab
@@ -427,6 +411,38 @@ class App(BaseTk):
         self.sum_tab = SummaryTab(self.nb, self, self.trans_tab)
         self.nb.add(self.sum_tab, text="   Summary   ")
         self.nb.bind("<<NotebookTabChanged>>", lambda e: self.sum_tab.refresh())
+
+    def player_bar(self, parent, on_play, on_seek=None):
+        """Play/pause, time, seek slider and volume, all driving the one audio player."""
+        b = SimpleNamespace(on_seek=on_seek)
+        pl = b.frame = ttk.Frame(parent)
+        b.play = ttk.Button(pl, text=I_PLAY, command=on_play, style="Play.TButton", takefocus=False)
+        b.play.pack(side="left")
+        b.time = ttk.Label(pl, text="0:00 / 0:00", style="Time.TLabel", width=17, anchor="center")
+        b.time.pack(side="left", padx=6)
+        b.vol = ttk.Scale(pl, from_=0, to=1, variable=self.v_vol, length=120, takefocus=False)
+        b.vol.pack(side="right")
+        b.vol_pct = ttk.Label(pl, style="Time.TLabel", width=4, anchor="e", text=f"{self.player.volume:.0%}")
+        b.vol_pct.pack(side="right", padx=(0, 4))
+        b.vol_lbl = ttk.Label(pl, text=I_VOL[2], cursor="hand2", font=(ICON_FONT, 12))
+        b.vol_lbl.pack(side="right", padx=(12, 2))
+        b.vol_lbl.bind("<Button-1>", lambda e: self._mute())
+        # Tk's sliders jump a whole step (here: 0 % or 100 %) when the bar is clicked;
+        # make a click put the knob right where you click, and dragging follow the mouse.
+        for ev in ("<Button-1>", "<B1-Motion>"):
+            b.vol.bind(ev, self._vol_drag)
+        b.vol.bind("<MouseWheel>", lambda e: self._vol_set(self.v_vol.get() + (0.05 if e.delta > 0 else -0.05)))
+        b.seek = ttk.Scale(pl, from_=0, to=1, variable=self.v_pos, takefocus=False)
+        b.seek.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        for ev in ("<Button-1>", "<B1-Motion>"):
+            b.seek.bind(ev, self._seek_drag)
+        b.seek.bind("<ButtonRelease-1>", lambda e, b=b: self._seek_release(e, b))
+        self.bars.append(b)
+        return b
+
+    def _bar_time(self, text):
+        for b in self.bars:
+            b.time.configure(text=text)
 
     def _spk_ui(self):
         on = self.v_spk.get() and speakers.available()
@@ -899,7 +915,7 @@ class App(BaseTk):
         elif kind == "audio_prog":
             item, frac = a
             if item == self.audio_item and self.audio_state == "preparing":
-                self.time_lbl.configure(text=f"preparing {frac:.0%}")
+                self._bar_time(f"preparing {frac:.0%}")
         elif kind == "mp3_prog":
             self._flash(f"Saving MP3 … {a[0]:.0%}", 120)
         elif kind == "mp3":
@@ -1515,8 +1531,9 @@ class App(BaseTk):
             return
         self.audio_state = "preparing"
         item, src = self.preview_item, r["file"]
-        self.time_lbl.configure(text="preparing …")
-        self.play_btn.configure(state="disabled")
+        self._bar_time("preparing …")
+        for b in self.bars:
+            b.play.configure(state="disabled")
 
         def run():
             try:
@@ -1557,9 +1574,11 @@ class App(BaseTk):
             self._flash(f"Playback error: {e}")
         self._player_ui()
 
-    def _seek_release(self, e):
+    def _seek_release(self, e, bar=None):
         self.dragging = False
         t = self.v_pos.get()
+        if bar is not None and bar.on_seek is not None and bar.on_seek(t):
+            return
         if self.audio_state == "ready":
             try:
                 self.player.seek(t)
@@ -1569,7 +1588,7 @@ class App(BaseTk):
         self._player_ui()
 
     def _vol_drag(self, e):
-        self._vol_set(self.vol.get(e.x, e.y))
+        self._vol_set(e.widget.get(e.x, e.y))
         return "break"
 
     def _vol_set(self, v):
@@ -1579,16 +1598,17 @@ class App(BaseTk):
 
     def _seek_drag(self, e):
         self.dragging = True
-        t = self.seek.get(e.x, e.y)
+        t = e.widget.get(e.x, e.y)
         self.v_pos.set(t)
-        self.time_lbl.configure(text=f"{fmt_hms(t)} / {fmt_hms(self._length())}")
+        self._bar_time(f"{fmt_hms(t)} / {fmt_hms(self._length())}")
         return "break"
 
     def _volume(self, v):
         self.player.set_volume(v)
-        self.vol_lbl.configure(text=I_MUTE if v < 0.01 else I_VOL[0] if v < 0.34 else I_VOL[1] if v < 0.67
-                               else I_VOL[2])
-        self.vol_pct.configure(text=f"{v:.0%}")
+        icon = I_MUTE if v < 0.01 else I_VOL[0] if v < 0.34 else I_VOL[1] if v < 0.67 else I_VOL[2]
+        for b in self.bars:
+            b.vol_lbl.configure(text=icon)
+            b.vol_pct.configure(text=f"{v:.0%}")
         if not getattr(self, "_vol_save", None):
             self._vol_save = self.after(800, lambda: (self._save(), setattr(self, "_vol_save", None)))
 
@@ -1612,18 +1632,20 @@ class App(BaseTk):
         r = self.rows.get(self.preview_item)
         has = r is not None
         playing = self.audio_state == "ready" and self.player.playing()
-        self.play_btn.configure(text=I_PAUSE if playing else I_PLAY,
-                                state="normal" if has and self.audio_state != "preparing" else "disabled")
-        self.seek.state(["!disabled"] if has else ["disabled"])
+        for b in self.bars:
+            b.play.configure(text=I_PAUSE if playing else I_PLAY,
+                             state="normal" if has and self.audio_state != "preparing" else "disabled")
+            b.seek.state(["!disabled"] if has else ["disabled"])
         self.mp3_btn.configure(state="normal" if has else "disabled")
         can_edit = has and r.get("result") is not None and r["status"] != "RUN"
         self.edit_btn.configure(state="normal" if can_edit or self.editing else "disabled")
         has_spk = has and bool((r.get("result") or {}).get("speakers"))
         self.showspk_cb.state(["!disabled"] if has_spk else ["disabled"])
         length = self._length()
-        self.seek.configure(to=max(length, 1))
+        for b in self.bars:
+            b.seek.configure(to=max(length, 1))
         if self.audio_state != "preparing":
-            self.time_lbl.configure(text=f"{fmt_hms(self.v_pos.get())} / {fmt_hms(length)}")
+            self._bar_time(f"{fmt_hms(self.v_pos.get())} / {fmt_hms(length)}")
 
     def _poll_player(self):
         try:
@@ -1631,13 +1653,14 @@ class App(BaseTk):
                 playing = self.player.playing()
                 pos = self.player.position()
                 self.v_pos.set(pos)
-                self.time_lbl.configure(text=f"{fmt_hms(pos)} / {fmt_hms(self._length())}")
+                self._bar_time(f"{fmt_hms(pos)} / {fmt_hms(self._length())}")
                 if playing:
                     self._highlight(pos)
                     self.trans_tab.follow(pos)
                 want = I_PAUSE if playing else I_PLAY
-                if self.play_btn.cget("text") != want:
-                    self.play_btn.configure(text=want)
+                for b in self.bars:
+                    if b.play.cget("text") != want:
+                        b.play.configure(text=want)
         except Exception as e:
             log(f"player poll: {e}")
         self.after(200, self._poll_player)
