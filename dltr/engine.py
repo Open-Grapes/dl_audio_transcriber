@@ -53,7 +53,9 @@ def download(name, progress=None):
         try:
             if name in models.EXTRA:          # translation / AI models
                 from huggingface_hub import snapshot_download
-                snapshot_download(models.REPOS[name], local_dir=str(dest), allow_patterns=models.DOWNLOAD_PATTERNS)
+                from faster_whisper.utils import disabled_tqdm      # no progress bar: the app has no console
+                snapshot_download(models.REPOS[name], local_dir=str(dest), allow_patterns=models.DOWNLOAD_PATTERNS,
+                                  tqdm_class=disabled_tqdm)
             else:
                 download_model(name, output_dir=str(dest))
         except Exception as e:   # network down, disk full …
