@@ -17,13 +17,20 @@ No length limit, no upload, no account. Uses Whisper (via [faster-whisper](https
 - **Translate to English** from any of them.
 - **Mixed languages**: tick this for recordings that switch language (e.g. English ↔ Mandarin); language is detected per section instead of once.
 - **Vocabulary** box: type names, jargon or spellings (e.g. `Damien, Tanjong Pagar, CPF, Kubernetes`) to steer spelling.
-- Windows 10 / 11, 64-bit.
+- **Windows 10 / 11** (64-bit) and **macOS 14+ on Apple Silicon** (M1 or newer).
 
 ## Download
 
-Get **`dl_transcribe-windows.zip`** from the [latest release](https://github.com/Open-Grapes/dl_audio_transcriber/releases/latest), unzip it anywhere and run **`dl_transcribe.exe`**. No install, no Python. The first time you press Start it offers to download a speech model (one time; after that it works offline).
+From the [latest release](https://github.com/Open-Grapes/dl_audio_transcriber/releases/latest):
 
-Windows SmartScreen may warn because the app isn't code-signed: click **More info → Run anyway**.
+| Computer | File | How |
+|---|---|---|
+| Windows 10 / 11 (64-bit) | `dl_transcribe-windows.zip` | Unzip anywhere and run **`dl_transcribe.exe`**. SmartScreen may warn (the app isn't code-signed): **More info → Run anyway** |
+| macOS 14+ on Apple Silicon (M1 or newer) | `dl_transcribe-mac-apple-silicon.dmg` | Open the .dmg and drag the app to Applications. First launch: System Settings → Privacy & Security → **Open Anyway** (the app isn't notarized by Apple) |
+
+No install, no Python. The first time you press Start it offers to download a speech model (one time; after that it works offline).
+
+On a Mac the app runs on the processor (Macs have no NVIDIA GPU): *small* or *base* are quick, *large-v3-turbo* is more accurate but slower. Shortcuts use Cmd instead of Ctrl (Cmd+F to find). Models and settings live in `~/Library/Application Support/dl_transcribe`.
 
 ## Run
 
@@ -95,7 +102,15 @@ Settings and log: `%LOCALAPPDATA%\dl_transcribe\`.
 To publish a new version: raise `APP_VERSION` in `dltr/common.py`, build, then
 
 ```bat
-gh release create v1.1.0 dist\Windows\dl_transcribe-windows.zip --title "1.1.0" --notes "What changed"
+gh release create v1.1.0 dist\Windows\dl_transcribe-windows.zip dist\MacOS\dl_transcribe-mac-apple-silicon.dmg --title "1.1.0" --notes "What changed"
+```
+
+## Build the Mac app
+
+A Mac app has to be built on a Mac. GitHub Actions does it: **Actions → Build macOS app → Run workflow** (or `gh workflow run mac.yml`, or push to the `mac-build` branch). The workflow runs `build_mac.py` on an Apple Silicon Mac, which builds the `.app`, tests it (transcribes a two-voice test recording with speakers, converts and plays audio, writes a PDF in several scripts, opens the window, checks for updates), packs `dl_transcribe-mac-apple-silicon.dmg` and runs the real updater against it. Download the .dmg into `dist/MacOS`:
+
+```bat
+gh run download -n dl_transcribe-mac-apple-silicon -D dist\MacOS
 ```
 
 ## Licenses

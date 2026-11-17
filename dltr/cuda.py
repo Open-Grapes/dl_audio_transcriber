@@ -66,7 +66,7 @@ def gpu():
     global _problem
     if sys.platform == "darwin":
         import platform
-        return False, "Apple Silicon (CPU)" if platform.machine() == "arm64" else "Intel Mac (CPU)"
+        return False, "Apple Silicon CPU" if platform.machine() == "arm64" else "Intel Mac CPU"
     setup()
     adapters = display_adapters()
     nvidia = [a for a in adapters if "nvidia" in a.lower()]

@@ -384,7 +384,7 @@ class App(BaseTk):
 
         body = ttk.Frame(pf)
         body.pack(fill="both", expand=True)
-        self.text = tk.Text(body, wrap="word", height=10, font=(UI, 11), relief="flat", padx=14, pady=10,
+        self.text = tk.Text(body, wrap="word", height=10, font=(UI, 11 + theme._S), relief="flat", padx=14, pady=10,
                             borderwidth=1, highlightthickness=1, spacing1=1, spacing3=1, undo=True,
                             cursor="arrow")
         tsb = ttk.Scrollbar(body, orient="vertical", command=self.text.yview)
@@ -433,11 +433,11 @@ class App(BaseTk):
         sel = p.get("select", "#cce0ff")
         self.text.configure(bg=p["field"], fg=p["text"], insertbackground=p["text"], highlightbackground=p["line"],
                             highlightcolor=p["accent"], selectbackground=sel, inactiveselectbackground=sel)
-        self.text.tag_configure("ts", foreground=p["faint"], font=(UI, 9))
-        self.text.tag_configure("ets", foreground=p["accent"], font=(MONO, 10))
+        self.text.tag_configure("ts", foreground=p["faint"], font=(UI, 9 + theme._S))
+        self.text.tag_configure("ets", foreground=p["accent"], font=(MONO, 10 + theme._S))
         self.text.tag_configure("now", background="#2f3b52" if self.dark else "#fff3b0")
         self.text.tag_configure("err", foreground=p["tags"]["FAIL"])
-        self.text.tag_configure("spk", foreground=p["accent"], font=(UI, 10, "bold"), spacing1=4)
+        self.text.tag_configure("spk", foreground=p["accent"], font=(UI, 10 + theme._S, "bold"), spacing1=4)
         self.text.tag_configure("find", background="#5c4a12" if self.dark else "#ffe08a")
         self.text.tag_configure("findcur", background="#d97706" if self.dark else "#ff9f43",
                                 foreground="#ffffff" if self.dark else "#000000")
