@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -72,30 +73,59 @@ def download(name, progress=None):
         raise RuntimeError(f"The {name} model download is incomplete. Try again.")
 
 
+_MPS = None
+
+
+def _mps_ok():
+    """Apple Silicon Macs: CTranslate2's Metal (MPS) backend uses the Mac's GPU. Off with DLTR_FORCE_CPU or
+    once it has failed on this Mac."""
+    global _MPS
+    if _MPS is None:
+        _MPS = sys.platform == "darwin" and not os.environ.get("DLTR_FORCE_CPU")
+        if _MPS:
+            try:
+                import ctranslate2
+                _MPS = "mps" in (getattr(ctranslate2, "get_supported_compute_types", None) and
+                                 _mps_types(ctranslate2) or ())
+            except Exception:
+                _MPS = False
+    return _MPS
+
+
+def _mps_types(ctranslate2):
+    try:
+        return ("mps",) if ctranslate2.get_supported_compute_types("mps") else ()
+    except Exception:
+        return ()
+
+
 def get_model(name, progress=None):
     """Load (downloading first if needed) and cache a model. Returns (model, device)."""
     from faster_whisper import WhisperModel
     has_gpu, _ = cuda.gpu()
-    device = "cuda" if has_gpu else "cpu"
+    device = "cuda" if has_gpu else ("mps" if _mps_ok() else "cpu")
     with _lock:
         if (name, device) in _loaded:
             return _loaded[(name, device)], device
         if not is_downloaded(name):
             download(name, progress)
         if progress:
-            progress(None, f"Loading {name} model on {'GPU' if device == 'cuda' else 'CPU'} …")
+            progress(None, f"Loading {name} model on {'CPU' if device == 'cpu' else 'GPU'} …")
         for k in list(_loaded):          # keep one model in memory at a time
             del _loaded[k]
         try:
             m = WhisperModel(str(model_dir(name)), device=device,
-                             compute_type="float16" if device == "cuda" else "int8")
-            if device == "cuda":     # run the encoder once so missing/old GPU libraries fail here, not mid-file
+                             compute_type="int8" if device == "cpu" else "float16")
+            if device != "cpu":      # run the encoder once so missing/old GPU libraries fail here, not mid-file
                 import numpy as np
                 m.detect_language(np.zeros(16000, dtype=np.float32))
         except Exception as e:
-            if device != "cuda":
+            if device == "cpu":
                 raise
-            log(f"GPU load failed, falling back to CPU: {e}")
+            log(f"GPU ({device}) load failed, falling back to CPU: {e}")
+            if device == "mps":
+                global _MPS
+                _MPS = False
             device = "cpu"
             m = WhisperModel(str(model_dir(name)), device="cpu", compute_type="int8")
         _loaded[(name, device)] = m
@@ -154,7 +184,7 @@ def transcribe(path, opts, on_progress=None, on_segment=None, cancel=None):
     kw = dict(language=language, task=task, beam_size=5, word_timestamps=opts.get("word_timestamps", True),
               vad_filter=True, initial_prompt=prompt, multilingual=bool(opts.get("multilingual")))
     def start(**kw):
-        if device == "cuda":
+        if device in ("cuda", "mps"):
             return BatchedInferencePipeline(model=model).transcribe(audio, batch_size=16, **kw)
         return model.transcribe(audio, vad_parameters={"min_silence_duration_ms": 500},
                                 condition_on_previous_text=False, **kw)

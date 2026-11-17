@@ -149,7 +149,7 @@ def selftest_ai(out, keys="nllb-1.3b,qwen3-4b"):
             "Anna: Agreed, but keep some money for customer support. Ben will send the new budget by Friday.",
             "eng_Latn", "short", times=False)
         res["summary_s"] = round(time.time() - t, 1)
-        res["device"] = ai.device()
+        res["device"] = ai.used_device()
     except Exception as e:
         import traceback
         res["error"] = f"{e}\n{traceback.format_exc()}"

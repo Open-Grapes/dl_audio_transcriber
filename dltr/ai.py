@@ -28,7 +28,15 @@ class Cancelled(Exception):
 def device():
     if os.environ.get("DLTR_FORCE_CPU"):
         return "cpu"
-    return "cuda" if cuda.gpu()[0] else "cpu"
+    if cuda.gpu()[0]:
+        return "cuda"
+    from . import engine
+    return "mps" if engine._mps_ok() else "cpu"
+
+
+def used_device():
+    """The device the loaded model really runs on (after any fallback)."""
+    return next((v[2] for v in _cache.values()), device())
 
 
 def nllb_key():
@@ -65,17 +73,21 @@ def _load(key):
         for k in list(_cache):            # one model at a time keeps memory low on smaller GPUs
             del _cache[k]
         dev = device()
-        ct = "int8_float16" if dev == "cuda" else "int8"
+        ct = {"cuda": "int8_float16", "mps": "int8_float16"}.get(dev, "int8")
         path = str(models.path(key))
         cls = ctranslate2.Generator if key == AI_KEY else ctranslate2.Translator
-        try:
-            obj = cls(path, device=dev, compute_type=ct)
-        except Exception as e:
-            if dev != "cuda":
-                raise
-            log(f"{key} on GPU failed ({e}); using the CPU")
-            dev = "cpu"
-            obj = cls(path, device=dev, compute_type="int8")
+        obj = None
+        for d, c in ((dev, ct), ("mps", "float16"), ("cpu", "int8")):
+            if d == "mps" and dev != "mps":
+                continue
+            try:
+                obj = cls(path, device=d, compute_type=c)
+                dev = d
+                break
+            except Exception as e:
+                if d == "cpu":
+                    raise
+                log(f"{key} on {d}/{c} failed ({e}); trying the next option")
         tok = tokenizers.Tokenizer.from_file(os.path.join(path, "tokenizer.json"))
         _cache[key] = (obj, tok, dev)
         return _cache[key]
@@ -106,7 +118,7 @@ def translate(texts, src, tgt, choice="auto", progress=None, on_text=None, cance
         else:
             todo.append(i)
     n = max(len(todo), 1)
-    batch = 16 if eng == "nllb" else (8 if dev == "cuda" else 2)
+    batch = 16 if eng == "nllb" else (8 if dev in ("cuda", "mps") else 2)
     done = 0
     for b in range(0, len(todo), batch):
         if cancel is not None and cancel.is_set():
@@ -185,7 +197,7 @@ def summarize(text, lang="eng_Latn", detail="normal", times=True, progress=None,
         progress(0.0, "Loading the AI model …")
     model, tok, dev = _load(AI_KEY)
     lang_name = langs.ai_name(lang)
-    budget = 12000 if dev == "cuda" else 3500          # tokens per part (CPU: smaller parts stay quick)
+    budget = 12000 if dev in ("cuda", "mps") else 3500          # tokens per part (CPU: smaller parts stay quick)
     lines = [ln for ln in text.splitlines() if ln.strip()]
     parts, cur, cur_n = [], [], 0
     for ln in lines:

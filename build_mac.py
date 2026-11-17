@@ -199,6 +199,7 @@ def smoke_test():
     res = json.loads((out / "dialog.json").read_text(encoding="utf-8"))
     assert "weather" in txt.lower() or "sunny" in txt.lower(), "the transcript doesn't contain the spoken words"
     assert len(res.get("speakers") or []) >= 2, f"expected 2 speakers, got {res.get('speakers')}"
+    print("Transcribed on:", res.get("device"), flush=True)
     for ext in ("srt", "pdf"):
         assert (out / f"dialog.{ext}").stat().st_size > 100, f"dialog.{ext} is empty"
 
