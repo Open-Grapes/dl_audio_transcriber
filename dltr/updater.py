@@ -1,6 +1,6 @@
-"""Check GitHub for a newer dl_transcribe and install it.
+"""Check GitHub for a newer dl_transcribe (repo: dl_audio_transcriber) and install it.
 
-The app asks GitHub for the latest *release* of Open-Grapes/dl_transcribe, compares its tag (e.g. v1.3.0) with
+The app asks GitHub for the latest *release* of Open-Grapes/dl_audio_transcriber, compares its tag (e.g. v1.3.0) with
 this version, downloads dl_transcribe-windows.zip from that release and replaces the app: a small helper script
 waits for the app to close, copies the new files over the old ones and starts the new version. Downloaded models
 and settings live in %LOCALAPPDATA% and are not touched.
@@ -16,6 +16,7 @@ fake release instead of GitHub.
 
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -25,13 +26,20 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from .common import APP_NAME, APP_VERSION, RELEASE_ASSET, SUP
+from .common import APP_NAME, APP_VERSION, IS_MAC, IS_WIN, RELEASE_ASSET, SUP
 
 REPO = "Open-Grapes/dl_audio_transcriber"
 API = os.environ.get("DLTR_UPDATE_API") or f"https://api.github.com/repos/{REPO}/releases/latest"
 TESTING = bool(os.environ.get("DLTR_UPDATE_API"))
 RELEASES_PAGE = f"https://github.com/{REPO}/releases/latest"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def asset_name():
+    """Name of the release file for this computer."""
+    if IS_MAC:
+        return f"{APP_NAME}-mac-{'apple-silicon' if platform.machine() == 'arm64' else 'intel'}.dmg"
+    return RELEASE_ASSET
 
 
 class UpdateError(Exception):
@@ -59,9 +67,11 @@ def _token():
         if os.environ.get(var):
             return os.environ[var].strip()
     gh = shutil.which("gh")
-    if not gh:
+    if not gh and IS_WIN:
         c = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "GitHub CLI" / "gh.exe"
         gh = str(c) if c.exists() else None
+    if not gh and IS_MAC:
+        gh = next((c for c in ("/opt/homebrew/bin/gh", "/usr/local/bin/gh") if os.path.exists(c)), None)
     if not gh:
         return None
     try:
@@ -77,7 +87,17 @@ def _get(url, token=None, accept="application/vnd.github+json", timeout=20):
                                                "X-GitHub-Api-Version": "2022-11-28"})
     if token:
         req.add_header("Authorization", f"Bearer {token}")
-    return urllib.request.urlopen(req, timeout=timeout)
+    return urllib.request.urlopen(req, timeout=timeout, context=_ssl_context())
+
+
+def _ssl_context():
+    """The Mac app has no system certificate store hooked up to Python, so bring certifi's."""
+    import ssl
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return ssl.create_default_context()
 
 
 def latest():
@@ -111,13 +131,14 @@ def latest():
     except (urllib.error.URLError, OSError) as e:
         raise UpdateError(f"Couldn't reach GitHub. Check your internet connection. ({e})") from None
 
-    asset = next((a for a in data.get("assets", []) if a.get("name") == RELEASE_ASSET), None)
+    want = asset_name()
+    asset = next((a for a in data.get("assets", []) if a.get("name") == want), None)
     return {
         "version": str(data.get("tag_name", "")).lstrip("vV"),
         "notes": (data.get("body") or "").strip(),
         "page": data.get("html_url") or RELEASES_PAGE,
         "published": (data.get("published_at") or "")[:10],
-        "asset": {"name": RELEASE_ASSET, "size": asset.get("size", 0), "url": asset.get("browser_download_url"),
+        "asset": {"name": want, "size": asset.get("size", 0), "url": asset.get("browser_download_url"),
                   "api_url": asset.get("url")} if asset else None,
         "token": token,
         "private": bool(token),
@@ -133,13 +154,13 @@ def download(info, dest_dir, progress=None, cancel=None):
     """Download the release zip into dest_dir. progress(done_bytes, total_bytes)."""
     asset = info.get("asset")
     if not asset:
-        raise UpdateError(f"The latest version has no {RELEASE_ASSET} file to download.")
+        raise UpdateError(f"The latest version has no {asset_name()} file to download.")
     dest = Path(dest_dir) / asset["name"]
     token = info.get("token")
     if token:
         # Private repo: ask the API for the file; it answers with a short-lived link that must be fetched
         # without the login header.
-        opener = urllib.request.build_opener(_NoRedirect)
+        opener = urllib.request.build_opener(_NoRedirect, urllib.request.HTTPSHandler(context=_ssl_context()))
         req = urllib.request.Request(asset["api_url"], headers={
             "Accept": "application/octet-stream", "Authorization": f"Bearer {token}",
             "User-Agent": f"{APP_NAME}/{APP_VERSION}"})
@@ -174,10 +195,13 @@ def download(info, dest_dir, progress=None, cancel=None):
 # ---------------------------------------------------------------- installing
 
 def app_location():
-    """The folder holding dl_transcribe.exe, or None when running from source."""
+    """The folder holding dl_transcribe.exe (Windows) or the .app bundle (Mac); None when running from source."""
     if not getattr(sys, "frozen", False):
         return None
-    return Path(sys.executable).resolve().parent
+    exe = Path(sys.executable).resolve()
+    if IS_MAC:
+        return next((p for p in exe.parents if p.suffix == ".app"), None)
+    return exe.parent
 
 
 def can_install():
@@ -185,7 +209,7 @@ def can_install():
     loc = app_location()
     if loc is None:
         return False, "This copy runs from the source code; update it with git pull instead."
-    if not os.access(loc, os.W_OK):
+    if not os.access(loc.parent if IS_MAC else loc, os.W_OK):
         return False, f"dl_transcribe can't write to {loc}. Download the new version from GitHub instead."
     return True, None
 
@@ -197,6 +221,8 @@ def prepare_install(package, pid, launch=True, loc=None):
     if loc is None:
         raise UpdateError("This copy runs from the source code; update it with git pull instead.")
     work = Path(tempfile.mkdtemp(prefix="dltr_update_", dir=_work_root(clean=False)))
+    if IS_MAC:
+        return _prepare_mac(Path(package), pid, launch, loc, work)
     try:
         with zipfile.ZipFile(package) as z:
             z.extractall(work / "new")
@@ -222,6 +248,28 @@ rmdir /s /q "{work}\\new"
     return ["cmd", "/c", str(script)], work
 
 
+def _prepare_mac(package, pid, launch, loc, work):
+    script = work / "update.sh"
+    launch_line = f'open "{loc}"' if launch else ": # (no relaunch)"
+    script.write_text(f"""#!/bin/bash
+# dl_transcribe updater: wait for the app to quit, copy the new app from the .dmg over it, open it again.
+while kill -0 {pid} 2>/dev/null; do sleep 0.5; done
+sleep 1
+MNT="$(mktemp -d)"
+hdiutil attach -nobrowse -readonly -mountpoint "$MNT" "{package}" >/dev/null || exit 1
+rm -rf "{loc}.new"
+if ditto "$MNT/{APP_NAME}.app" "{loc}.new"; then
+  rm -rf "{loc}" && mv "{loc}.new" "{loc}"
+fi
+hdiutil detach "$MNT" -quiet
+rm -f "{package}"
+echo done > "{work}/finished.txt"
+{launch_line}
+""")
+    script.chmod(0o755)
+    return ["/bin/bash", str(script)], work
+
+
 def _work_root(clean=True):
     """Folder for update downloads. clean=True first removes leftovers of earlier or abandoned updates; it must
     be False while a download is being unpacked (that download lives in this folder too)."""
@@ -237,8 +285,12 @@ def _work_root(clean=True):
 
 
 def start_helper(cmd):
-    """Start the helper so it outlives this process. A hidden console (not DETACHED_PROCESS): tasklist and
-    robocopy need one."""
-    flags = NO_WINDOW | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    subprocess.Popen(cmd, creationflags=flags, close_fds=True, stdin=subprocess.DEVNULL,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    """Start the helper so it outlives this process."""
+    if IS_WIN:
+        # A hidden console (not DETACHED_PROCESS): tasklist and robocopy need one.
+        flags = NO_WINDOW | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        subprocess.Popen(cmd, creationflags=flags, close_fds=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        subprocess.Popen(cmd, start_new_session=True, close_fds=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

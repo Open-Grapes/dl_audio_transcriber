@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from . import models, theme
-from .common import MODELS, MODELS_DIR, log
+from .common import MODELS, MODELS_DIR, log, open_path
 from .worker import Worker
 
 
@@ -349,7 +349,7 @@ class ModelsWindow:
 
     def open_folder(self):
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        os.startfile(MODELS_DIR)
+        open_path(MODELS_DIR)
 
     def close(self):
         if self.busy == "download":

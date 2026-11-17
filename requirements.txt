@@ -1,7 +1,9 @@
 faster-whisper==1.2.1
 av>=12,<16
-nvidia-cublas-cu12
-nvidia-cudnn-cu12>=9,<10
+nvidia-cublas-cu12; sys_platform == "win32"
+nvidia-cudnn-cu12>=9,<10; sys_platform == "win32"
+pyobjc-framework-AVFoundation; sys_platform == "darwin"
+certifi
 tkinterdnd2>=0.4
 pillow>=10.0
 pyinstaller>=6.0

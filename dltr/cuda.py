@@ -64,6 +64,9 @@ def display_adapters():
 def gpu():
     """(use_cuda, description). Sets problem() when there is a GPU we can't use."""
     global _problem
+    if sys.platform == "darwin":
+        import platform
+        return False, "Apple Silicon (CPU)" if platform.machine() == "arm64" else "Intel Mac (CPU)"
     setup()
     adapters = display_adapters()
     nvidia = [a for a in adapters if "nvidia" in a.lower()]

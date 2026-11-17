@@ -3,13 +3,15 @@
 import ctypes
 import hashlib
 import os
+import sys
 import threading
 from pathlib import Path
 
 from .common import SUP
 
 CACHE = SUP / "cache"
-DIRECT = {".mp3", ".wav"}        # Windows plays these as they are; everything else gets an MP3 copy first
+# Played as they are; everything else (videos, other audio) gets an MP3 copy first.
+DIRECT = {".mp3", ".wav", ".m4a", ".aac", ".aif", ".aiff", ".caf"} if sys.platform == "darwin" else {".mp3", ".wav"}
 
 
 def to_mp3(src, dst, progress=None, cancel=None):
@@ -86,14 +88,74 @@ def clean_cache(keep_mb=2000):
         pass
 
 
-class Player:
-    """Plays one file through Windows MCI. All calls must come from the UI thread."""
+class _AVPlayer:
+    """macOS: plays one file with AVFoundation's AVAudioPlayer (built into macOS, through PyObjC).
+    Same interface as the Windows player below. All calls must come from the UI thread."""
+
+    def __init__(self):
+        self.p = None
+        self.length = 0.0
+        self.volume = 0.8
+        self.alias = None              # kept for the same interface: "a file is open"
+
+    def open(self, path):
+        self.close()
+        from AVFoundation import AVAudioPlayer
+        from Foundation import NSURL
+        url = NSURL.fileURLWithPath_(str(path))
+        res = AVAudioPlayer.alloc().initWithContentsOfURL_error_(url, None)
+        p, err = res if isinstance(res, tuple) else (res, None)
+        if p is None:
+            raise RuntimeError(str(err.localizedDescription()) if err is not None else "Can't open the audio.")
+        p.prepareToPlay()
+        self.p, self.alias = p, str(path)
+        self.length = float(p.duration() or 0.0)
+        self.set_volume(self.volume)
+
+    def close(self):
+        if self.p is not None:
+            try:
+                self.p.stop()
+            except Exception:
+                pass
+        self.p, self.alias, self.length = None, None, 0.0
+
+    def play(self, at=None):
+        if self.p is None:
+            return
+        if at is not None:
+            self.p.setCurrentTime_(max(0.0, min(float(at), self.length)))
+        self.p.play()
+
+    def pause(self):
+        if self.p is not None:
+            self.p.pause()
+
+    def seek(self, at):
+        if self.p is not None:
+            self.p.setCurrentTime_(max(0.0, min(float(at), self.length)))
+
+    def position(self):
+        return float(self.p.currentTime()) if self.p is not None else 0.0
+
+    def playing(self):
+        return bool(self.p is not None and self.p.isPlaying())
+
+    def set_volume(self, v):
+        self.volume = max(0.0, min(1.0, v))
+        if self.p is not None:
+            self.p.setVolume_(self.volume)
+
+
+class _MciPlayer:
+    """Windows: plays one file through Windows MCI. All calls must come from the UI thread."""
     _n = 0
 
     def __init__(self):
         self.alias = None
         self.length = 0.0
         self.volume = 0.8
+
 
     @staticmethod
     def _mci(cmd):
@@ -107,8 +169,8 @@ class Player:
 
     def open(self, path):
         self.close()
-        Player._n += 1
-        alias = f"dltr{Player._n}"
+        _MciPlayer._n += 1
+        alias = f"dltr{_MciPlayer._n}"
         self._mci(f'open "{path}" type mpegvideo alias {alias}')
         self.alias = alias
         self._mci(f"set {alias} time format milliseconds")
@@ -170,6 +232,9 @@ class Player:
                 self._mci(f"setaudio {self.alias} volume to {int(self.volume * 1000)}")
             except RuntimeError:
                 pass
+
+
+Player = _AVPlayer if sys.platform == "darwin" else _MciPlayer
 
 
 def run_bg(fn, *args, done=None, fail=None):

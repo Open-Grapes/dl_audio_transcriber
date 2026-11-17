@@ -400,10 +400,17 @@ def to_csv(result):
     return buf.getvalue()
 
 
-# Fonts that ship with Windows 10/11, so PDFs show Chinese, Tamil, Thai … without bundling fonts.
-_WINFONTS = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
-_PDF_FONTS = [("segoeui.ttf", 0), ("msyh.ttc", 0), ("Nirmala.ttc", 0), ("malgun.ttf", 0), ("YuGothR.ttc", 0),
-              ("LeelawUI.ttf", 0), ("ebrima.ttf", 0), ("seguisym.ttf", 0)]
+# Fonts that ship with the system, so PDFs show Chinese, Tamil, Thai … without bundling fonts.
+# (file, index inside a .ttc collection). The first one found is the main font, the rest are fallbacks.
+if os.name == "nt":
+    _FONT_DIR = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+    _PDF_FONTS = [("segoeui.ttf", 0), ("msyh.ttc", 0), ("Nirmala.ttc", 0), ("malgun.ttf", 0), ("YuGothR.ttc", 0),
+                  ("LeelawUI.ttf", 0), ("ebrima.ttf", 0), ("seguisym.ttf", 0)]
+else:                                                    # macOS
+    _FONT_DIR = Path("/System/Library/Fonts")
+    _PDF_FONTS = [("Supplemental/Arial.ttf", 0), ("Supplemental/Arial Unicode.ttf", 0), ("STHeiti Medium.ttc", 0),
+                  ("Supplemental/Songti.ttc", 0), ("Supplemental/Tamil Sangam MN.ttc", 0), ("Thonburi.ttc", 0),
+                  ("AppleSDGothicNeo.ttc", 0), ("Apple Symbols.ttf", 0)]
 
 
 def to_pdf(result, timestamps=False):
@@ -416,7 +423,7 @@ def to_pdf(result, timestamps=False):
     pdf.set_auto_page_break(True, 18)
     names = []
     for i, (fname, idx) in enumerate(_PDF_FONTS):
-        f = _WINFONTS / fname
+        f = _FONT_DIR / fname
         if f.exists():
             fam = f"f{i}"
             try:

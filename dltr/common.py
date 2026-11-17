@@ -23,9 +23,43 @@ IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
 
 if FROZEN:
-    APP_DIR = Path(sys.executable).resolve().parent          # folder holding the .exe
+    APP_DIR = Path(sys.executable).resolve().parent          # folder holding the .exe (Mac: .app/Contents/MacOS)
 else:
     APP_DIR = Path(__file__).resolve().parent.parent         # repo root when run from source
+
+
+def asset(*parts):
+    """A file shipped with the app: next to the .exe on Windows, inside the bundle (Resources) on the Mac."""
+    roots = [APP_DIR / "assets"]
+    if FROZEN:
+        meipass = Path(getattr(sys, "_MEIPASS", APP_DIR))
+        roots += [meipass / "assets", APP_DIR.parent / "Resources" / "assets"]
+    for r in roots:
+        p = r.joinpath(*parts)
+        if p.exists():
+            return p
+    return roots[0].joinpath(*parts)
+
+
+def open_path(path, reveal=False):
+    """Show a folder (or select a file) in Explorer / Finder."""
+    import subprocess
+    p = Path(path)
+    try:
+        if IS_WIN:
+            if reveal and p.is_file():
+                subprocess.Popen(["explorer", "/select,", str(p)])
+            else:
+                os.startfile(str(p if p.exists() else p.parent))
+        elif IS_MAC:
+            if reveal and p.exists():
+                subprocess.Popen(["open", "-R", str(p)])
+            else:
+                subprocess.Popen(["open", str(p if p.exists() else p.parent)])
+        else:
+            subprocess.Popen(["xdg-open", str(p if p.is_dir() else p.parent)])
+    except OSError:
+        pass
 
 # Per-user data on this computer: downloaded models, settings, log.
 if IS_WIN:

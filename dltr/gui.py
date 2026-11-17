@@ -14,8 +14,8 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import engine, media, models, speakers, theme
 from .worker import Worker
-from .common import (APP_DIR, APP_NAME, LOG, FORMATS, LANGUAGES, MODELS, find_media, fmt_hms,
-                     lang_name, load_settings, log, save_settings)
+from .common import (APP_NAME, IS_MAC, IS_WIN, LOG, FORMATS, LANGUAGES, MODELS, asset, find_media, fmt_hms,
+                     lang_name, load_settings, log, open_path, save_settings)
 from .theme import MONO, UI
 
 try:
@@ -28,9 +28,15 @@ BADGE = {"WAIT": "Ready — press Start", "RUN": "⏳ Working", "DONE": "✅ Don
          "SKIP": "— Cancelled"}
 AUTO = "Auto-detect"
 LANG_CHOICES = [AUTO] + [f"{n} ({c})" for c, n in LANGUAGES.items()]
-ICON_FONT = "Segoe MDL2 Assets"       # Windows 10/11 symbol font: crisp play/pause/volume icons
-I_PLAY, I_PAUSE = "\uE768", "\uE769"
-I_MUTE, I_VOL = "\uE74F", ("\uE993", "\uE994", "\uE995")
+if IS_WIN:
+    ICON_FONT = "Segoe MDL2 Assets"   # Windows 10/11 symbol font: crisp play/pause/volume icons
+    I_PLAY, I_PAUSE = "\uE768", "\uE769"
+    I_MUTE, I_VOL = "\uE74F", ("\uE993", "\uE994", "\uE995")
+else:                                 # Mac: plain symbols (\uFE0E = draw as text, not as a colour emoji)
+    ICON_FONT = theme.UI
+    I_PLAY, I_PAUSE = "\u25B6\uFE0E", "\u23F8\uFE0E"
+    I_MUTE, I_VOL = "\U0001F507", ("\U0001F508", "\U0001F509", "\U0001F50A")
+MOD = "Command" if IS_MAC else "Control"     # Cmd+F on the Mac, Ctrl+F on Windows
 SPK_CHOICES = ["Auto"] + [str(n) for n in range(2, 11)]
 
 
@@ -44,7 +50,9 @@ def _short(path, n=60):
 
 
 def set_icon(win):
-    ico = APP_DIR / "assets" / "icon.ico"
+    if not IS_WIN:
+        return                        # the Mac app's icon comes from its bundle
+    ico = asset("icon.ico")
     try:
         if ico.exists():
             win.iconbitmap(default=str(ico))
@@ -53,20 +61,16 @@ def set_icon(win):
 
 
 def open_in_explorer(path):
-    p = Path(path)
-    try:
-        if p.is_file():
-            subprocess.Popen(["explorer", "/select,", str(p)])
-        else:
-            os.startfile(str(p if p.exists() else p.parent))
-    except OSError:
-        pass
+    open_path(path, reveal=True)
 
 
 def sound(ok):
     try:
-        import winsound
-        winsound.MessageBeep(winsound.MB_OK if ok else winsound.MB_ICONHAND)
+        if IS_WIN:
+            import winsound
+            winsound.MessageBeep(winsound.MB_OK if ok else winsound.MB_ICONHAND)
+        elif IS_MAC:
+            subprocess.Popen(["afplay", f"/System/Library/Sounds/{'Glass' if ok else 'Basso'}.aiff"])
     except Exception:
         pass
 
@@ -349,7 +353,7 @@ class App(BaseTk):
         self.find_ent.bind("<Shift-Return>", lambda e: self._find_step(-1))
         self.find_ent.bind("<Escape>", lambda e: self.close_find())
         self.find_ent.bind("<F3>", lambda e: self._find_step(1))
-        self.bind_all("<Control-f>", lambda e: (self.open_find(), "break")[1])
+        self.bind_all(f"<{MOD}-f>", lambda e: (self.open_find(), "break")[1])
         self.bind_all("<F3>", lambda e: self._find_step(1))
         self._hdr = hdr
 
@@ -389,12 +393,13 @@ class App(BaseTk):
         tsb.pack(side="right", fill="y")
         pane.add(pf, weight=3)
 
-        self.text.bind("<Control-a>", lambda e: (self.text.tag_add("sel", "1.0", "end"), "break")[1])
+        self.text.bind(f"<{MOD}-a>", lambda e: (self.text.tag_add("sel", "1.0", "end"), "break")[1])
         self.text.bind("<Key>", self._edit_guard)
         for ev in ("<<Paste>>", "<<Cut>>", "<<Clear>>"):
             self.text.bind(ev, lambda e: self._guard_virtual(e))
         self.text.tag_bind("spk", "<Button-1>", self._spk_menu)
         self.text.tag_bind("spk", "<Button-3>", self._spk_menu)
+        self.text.tag_bind("spk", "<Button-2>", self._spk_menu)      # right-click on the Mac
         self.text.tag_bind("spk", "<Enter>", lambda e: (not self.editing) and self.text.configure(cursor="hand2"))
         self.text.tag_bind("seg", "<ButtonRelease-1>", self._click_seg)
         self.text.tag_bind("seg", "<Enter>", lambda e: (not self.editing) and self.text.configure(cursor="hand2"))
@@ -1168,7 +1173,7 @@ class App(BaseTk):
         if not self.editing:
             return None
         ks = e.keysym
-        ctrl = e.state & 0x4
+        ctrl = e.state & (0x4 | (0x8 if IS_MAC else 0))      # Ctrl, or Cmd on the Mac
         if ks in self._NAV or (ctrl and ks.lower() in ("a", "c", "z", "y", "home", "end", "left", "right")):
             return None
         if not e.char and ks not in ("BackSpace", "Delete"):

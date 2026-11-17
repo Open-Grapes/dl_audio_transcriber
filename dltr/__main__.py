@@ -61,10 +61,71 @@ def cli(args):
     return rc
 
 
+def check_update(out):
+    """--check-update OUT.json: what Check for updates sees (used by the Mac build test)."""
+    import json
+    from . import updater
+    try:
+        info = updater.latest()
+        res = {"version": info["version"], "asset": (info.get("asset") or {}).get("name"),
+               "newer": updater.is_newer(info["version"])}
+    except Exception as e:
+        res = {"error": str(e)}
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(res, fh)
+    return 0 if "error" not in res else 1
+
+
+def selftest_media(src, out):
+    """--selftest-media AUDIO OUT.json: MP3 conversion, playback through the app's player, and a PDF with
+    several scripts (used by the Mac build test; works on Windows too)."""
+    import json
+    import tempfile
+    import time
+    from pathlib import Path
+    from . import engine, media
+    res = {}
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        mp3 = media.to_mp3(src, tmp / "converted.mp3")
+        res["mp3_bytes"] = mp3.stat().st_size
+        p = media.Player()
+        p.open(mp3)
+        res["length"] = round(p.length, 2)
+        p.set_volume(0.3)
+        p.play(0.5)
+        time.sleep(1.5)
+        res["playing"] = p.playing()
+        res["position"] = round(p.position(), 2)
+        p.pause()
+        p.seek(2.0)
+        res["after_seek"] = round(p.position(), 2)
+        p.close()
+        fake = {"file": "selftest.wav", "task": "transcribe", "duration": 12.0, "spoken_language": "en",
+                "language": "en", "model": "tiny", "speakers": ["Speaker 1", "Speaker 2"],
+                "segments": [{"id": 0, "start": 0.0, "end": 2.0, "text": "Hello, this is a test.", "speaker": 0},
+                             {"id": 1, "start": 2.0, "end": 4.0, "text": "你好，这是一个测试。", "speaker": 1},
+                             {"id": 2, "start": 4.0, "end": 6.0, "text": "வணக்கம், இது ஒரு சோதனை.", "speaker": 0},
+                             {"id": 3, "start": 6.0, "end": 8.0, "text": "สวัสดี นี่คือการทดสอบ", "speaker": 1}]}
+        pdf = engine.to_pdf(fake, timestamps=True)
+        (Path(out).parent / "selftest.pdf").write_bytes(pdf)
+        res["pdf_bytes"] = len(pdf)
+    except Exception as e:
+        import traceback
+        res["error"] = f"{e}\n{traceback.format_exc()}"
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(res, fh)
+    return 0 if "error" not in res else 1
+
+
 def main():
     args = sys.argv[1:]
     if args[:1] == ["--cli"]:
         return cli(args[1:])
+    if args[:1] == ["--check-update"] and len(args) == 2:
+        return check_update(args[1])
+    if args[:1] == ["--selftest-media"] and len(args) == 3:
+        return selftest_media(args[1], args[2])
     from .gui import App
     App(files=args).mainloop()
     return 0

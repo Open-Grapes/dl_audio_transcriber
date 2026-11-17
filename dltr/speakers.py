@@ -5,9 +5,9 @@ apart, then the turns are clustered into speakers. The two models (~45 MB) ship 
 import bisect
 import os
 
-from .common import APP_DIR, log
+from .common import asset, log
 
-MODEL_DIR = APP_DIR / "assets" / "speakers"
+MODEL_DIR = asset("speakers")
 
 
 def available():

@@ -12,7 +12,7 @@ import webbrowser
 from tkinter import messagebox, ttk
 
 from . import models, theme, updater
-from .common import APP_NAME, APP_VERSION, MODELS, log
+from .common import APP_NAME, APP_VERSION, IS_MAC, MODELS, log
 from .worker import Worker
 
 
@@ -161,7 +161,7 @@ class UpdateWindow:
         if self._app_newer():
             txt = f"{info['version']}{when} — a newer version is available{priv}"
             if not info.get("asset"):
-                txt += f"\n(but that release has no {updater.RELEASE_ASSET} to download yet)"
+                txt += f"\n(but that release has no {updater.asset_name()} to download yet)"
         else:
             txt = f"{info['version']}{when} — you're on the latest version ✓{priv}"
         self.latest_lbl.configure(text=txt)
@@ -256,7 +256,8 @@ class UpdateWindow:
                         self.cancel)
                     prog(0.99, "Unpacking …")
                     helper, _ = updater.prepare_install(pkg, os.getpid())
-                    shutil.rmtree(work_dir, ignore_errors=True)
+                    if not IS_MAC:               # the Mac helper mounts the .dmg from that folder
+                        shutil.rmtree(work_dir, ignore_errors=True)
             except updater.UpdateError as e:
                 err = str(e)
             except Exception as e:
