@@ -117,12 +117,12 @@ Settings and log: `%LOCALAPPDATA%\dl_transcribe\`.
 
 ## Updates
 
-**Check for updates** asks GitHub for the latest release of this repo. If its tag (e.g. `v1.1.0`) is newer than the running version, **Update all** downloads `dl_transcribe-windows.zip` from that release; a small helper swaps the files once the app closes and starts it again. Downloaded models and settings are kept. If you're already on the latest version it says so. It also checks downloaded models for newer versions on Hugging Face.
+**Check for updates** asks GitHub for the latest release of this repo. If its tag (e.g. `v1.3`) is newer than the running version, **Update all** downloads `dl_transcribe-windows.zip` from that release; a small helper swaps the files once the app closes and starts it again. Downloaded models and settings are kept. If you're already on the latest version it says so. It also checks downloaded models for newer versions on Hugging Face.
 
 To publish a new version: raise `APP_VERSION` in `dltr/common.py`, build, then
 
 ```bat
-gh release create v1.1.0 dist\Windows\dl_transcribe-windows.zip dist\MacOS\dl_transcribe-mac-apple-silicon.dmg --title "1.1.0" --notes "What changed"
+gh release create v1.3 dist\Windows\dl_transcribe-windows.zip dist\MacOS\dl_transcribe-mac-apple-silicon.dmg --title "1.3" --notes "What changed"
 ```
 
 ## Build the Mac app
