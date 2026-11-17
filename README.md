@@ -15,6 +15,7 @@ No length limit, no upload, no account. Uses Whisper (via [faster-whisper](https
 - **Speakers** (optional): tick *Speakers (who said what)* to label each turn *Speaker 1*, *Speaker 2* … (Auto finds how many, or pick the number). Click a speaker name to rename it everywhere or to move a wrongly labelled part to another speaker. Runs offline with sherpa-onnx (pyannote segmentation 3.0, MIT + 3D-Speaker ERes2Net, Apache-2.0; ~45 MB, included).
 - **99 languages**, auto-detected — including English, Mandarin, Cantonese, Malay, Tamil, Indonesian, Thai, Vietnamese, Tagalog, Japanese, Korean, Hindi.
 - **Translate tab**: translate a transcript (or any pasted text) into any of **200 languages**, offline. Every sentence keeps its timestamp and speaker, the original and the translation are shown one above the other, and clicking a sentence highlights its match in both (and plays it). Export the translation as PDF / TXT / SRT / VTT / JSON / CSV.
+- **Share via Wi-Fi**: phones and other computers on your Wi-Fi open a link (or scan a QR code) and upload, play, transcribe, translate, summarise and download in their browser, using this PC.
 - **Summary tab**: an offline **AI summary** of a transcript, translation or pasted text: overview, key points, key moments with their times and action items, in the language you pick.
 - **Mixed languages** (Transcribe tab): tick this for recordings that switch language (e.g. English ↔ Mandarin); language is detected per section instead of once.
 - **Vocabulary** box: type names, jargon or spellings (e.g. `Damien, Tanjong Pagar, CPF, Kubernetes`) to steer spelling.
@@ -63,7 +64,21 @@ Closing the window with transcripts that were never exported asks first.
 
 The progress bar and the row show the same percentage, and the status line shows the elapsed time. While it runs, **Start** turns into a red **Stop** button that stops the current file straight away. Transcription runs in a separate background process, so the window never freezes.
 
-### Translate
+### Share via Wi-Fi (phones, tablets, other laptops)
+
+Click **Share via Wi-Fi** (top right). A window shows a QR code and two addresses, such as `http://192.168.0.106` and `http://dl-transcribe.local`. On a phone or another computer **on the same Wi-Fi**, scan the code with the camera or type an address into the browser. In that page they can:
+
+- **upload** audio or video (voice memos, recordings, videos), pick the language / model / Mixed languages / Speakers, and press **Start**;
+- see progress (several people can queue recordings; they're done one after another);
+- **play** the recording and tap any sentence to hear it, with the highlight following the audio;
+- **translate** it into any of 200 languages (original and translation shown sentence by sentence) and make an **AI summary**;
+- **download** PDF / TXT / SRT / VTT / JSON / CSV of the transcript or the translation.
+
+This PC does all the work (with its GPU), so it must stay on with the app open; nothing goes to the internet. Sharing stays on until you click **Turn off** or close the app, and uploads are deleted then. There's no password, so anyone on the same Wi-Fi who knows the address can use it while sharing is on.
+
+**Phone can't connect?** The first time, Windows asks whether to allow dl_transcribe on networks: allow it on *Private networks*. Your Wi-Fi must also be set to *Private* in Windows Settings → Network & internet. Some networks (offices, hotels) block devices from seeing each other, and some block `.local` names; then use the number address.
+
+## Translate
 
 1. On the **Transcribe** tab, click the transcript you want. On the **Translate** tab press **Import from Transcribe** (or **Paste text** to translate anything, e.g. text copied from a website or a chat).
 2. **From**: *Auto-detect* (it works sentence by sentence, so recordings that mix English, Chinese, Japanese … are fine) or pick the language if it guesses wrong. **To**: any of 200 languages. Type in either list to search it.

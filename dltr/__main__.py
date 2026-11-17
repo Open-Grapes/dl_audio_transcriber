@@ -158,8 +158,29 @@ def selftest_ai(out, keys="nllb-1.3b,qwen3-4b"):
     return 0 if "error" not in res else 1
 
 
+def wifi(seconds="600", out=None):
+    """--wifi [SECONDS] [OUT.json]: run Share via Wi-Fi without the window for a while (testing)."""
+    import json
+    import time
+    from .common import load_settings
+    from .web import Sharing
+    s = Sharing.start(load_settings())
+    time.sleep(4)                       # let the .local name come up
+    if out:
+        with open(out, "w", encoding="utf-8") as fh:
+            json.dump({"urls": s.urls, "mdns": s.mdns}, fh)
+    _print("Sharing on:", " ".join(s.urls))
+    try:
+        time.sleep(float(seconds))
+    finally:
+        s.stop()
+    return 0
+
+
 def main():
     args = sys.argv[1:]
+    if args[:1] == ["--wifi"]:
+        return wifi(*args[1:3])
     if args[:1] == ["--selftest-ai"] and len(args) in (2, 3):
         return selftest_ai(*args[1:])
     if args[:1] == ["--cli"]:

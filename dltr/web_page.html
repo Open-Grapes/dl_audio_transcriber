@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>dl_transcribe</title>
+<link rel="icon" href="/icon.png">
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--text:#1d2330;--muted:#5b6270;--faint:#8a909b;--line:#dde0e5;--accent:#2563eb;
+--accent2:#dbe7ff;--ok:#16803c;--bad:#c62828;--hl:#fff1a8;--field:#fff;--shadow:0 1px 2px rgba(0,0,0,.06)}
+@media (prefers-color-scheme:dark){:root{--bg:#16171b;--card:#202127;--text:#e6e7ea;--muted:#a3a8b3;--faint:#7f8590;
+--line:#34363f;--accent:#3b82f6;--accent2:#1e3157;--ok:#5cc46a;--bad:#ff7070;--hl:#3a4560;--field:#1a1b20;--shadow:none}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",
+"Microsoft YaHei UI","PingFang SC","Noto Sans",sans-serif;-webkit-text-size-adjust:100%}
+header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--card);
+position:sticky;top:0;z-index:5}
+header img{width:28px;height:28px}
+header .t{font-weight:650}
+header .s{color:var(--muted);font-size:13px;margin-left:auto;text-align:right}
+main{max-width:980px;margin:0 auto;padding:14px 16px 60px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin:0 0 14px;box-shadow:var(--shadow)}
+h2{font-size:16px;margin:0 0 10px}
+button,.btn{font:inherit;border:1px solid var(--line);background:var(--field);color:var(--text);border-radius:8px;
+padding:8px 14px;cursor:pointer;min-height:38px;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.stop{background:var(--bad);border-color:var(--bad);color:#fff}
+button:disabled{opacity:.5;cursor:default}
+.row label{max-width:100%;display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap}
+.row label select{max-width:100%;min-width:0}
+@media (max-width:520px){.row label{width:100%}.row label select{flex:1 1 0;width:0}}
+select,input[type=text]{font:inherit;border:1px solid var(--line);background:var(--field);color:var(--text);border-radius:8px;
+padding:7px 8px;min-height:38px;max-width:100%}
+label.cb{display:inline-flex;align-items:center;gap:6px;margin-right:14px;white-space:nowrap}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.muted{color:var(--muted)} .small{font-size:13px}
+.drop{border:2px dashed var(--line);border-radius:12px;padding:22px;text-align:center;color:var(--muted);cursor:pointer}
+.drop.over{border-color:var(--accent);background:var(--accent2)}
+.bar{height:6px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:8px}
+.bar>i{display:block;height:100%;background:var(--accent);width:0;transition:width .3s}
+.job{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 0;border-top:1px solid var(--line)}
+.job:first-child{border-top:0}
+.job .n{font-weight:600;word-break:break-all;flex:1 1 220px}
+.job .st{font-size:13px;color:var(--muted);flex:1 1 100%}
+.badge{font-size:12px;border-radius:20px;padding:2px 9px;background:var(--accent2);color:var(--text)}
+.badge.done{background:transparent;color:var(--ok);border:1px solid var(--ok)}
+.badge.failed{background:transparent;color:var(--bad);border:1px solid var(--bad)}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:10px 0 12px;overflow-x:auto}
+.tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--muted);padding:8px 12px}
+.tabs button.on{color:var(--text);border-bottom-color:var(--accent);font-weight:600}
+audio{width:100%;margin:6px 0}
+.tx{max-height:58vh;overflow:auto;padding:4px 2px;line-height:1.75}
+.tx p{margin:0 0 12px}
+.spk{color:var(--accent);font-weight:650;margin:10px 0 2px;font-size:14px}
+.seg{cursor:pointer;border-radius:4px;padding:1px 0}
+.seg:hover{background:var(--accent2)}
+.seg.now{background:var(--hl)}
+.ts{color:var(--faint);font-size:12px;margin-right:3px;font-variant-numeric:tabular-nums}
+.pair{display:grid;grid-template-columns:1fr;gap:2px;padding:8px 6px;border-top:1px solid var(--line);cursor:pointer;border-radius:6px}
+.pair .o{color:var(--muted);font-size:14px}
+.pair.now{background:var(--hl)}
+@media (min-width:760px){.pair{grid-template-columns:1fr 1fr;gap:16px}.pair .o{font-size:15px}}
+.sum h3{color:var(--accent);font-size:15px;margin:14px 0 4px}
+.sum ul{margin:0;padding-left:22px}
+.err{color:var(--bad)}
+.dl{display:flex;flex-wrap:wrap;gap:6px}
+.dl a{font-size:13px;padding:6px 10px;min-height:32px}
+.hidden{display:none!important}
+.back{margin-bottom:6px}
+</style>
+</head>
+<body>
+<header><img src="/icon.png" alt=""><div class="t">dl_transcribe</div><div class="s" id="pc">connecting…</div></header>
+<main>
+  <section id="home">
+    <div class="card">
+      <h2>Add a recording</h2>
+      <div class="drop" id="drop">Tap to choose audio or video<br><span class="small">mp3 · m4a · wav · mp4 · mov · voice memos · and more</span></div>
+      <input type="file" id="file" accept="audio/*,video/*,.mp3,.m4a,.wav,.aac,.flac,.ogg,.opus,.mp4,.mov,.mkv,.webm" multiple hidden>
+      <div id="ups"></div>
+      <div class="row" style="margin-top:12px">
+        <label class="small muted">Language <select id="lang"><option value="">Auto-detect</option></select></label>
+        <label class="small muted">Model <select id="model"></select></label>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <label class="cb small"><input type="checkbox" id="mixed"> Mixed languages</label>
+        <label class="cb small"><input type="checkbox" id="speakers"> Speakers (who said what)</label>
+      </div>
+      <p class="small muted" style="margin:10px 0 0">Your files are sent to the PC running dl_transcribe on this Wi-Fi and processed there (nothing goes to the internet). Press <b>Start</b> on a recording to transcribe it.</p>
+    </div>
+    <div class="card"><h2>Recordings</h2><div id="jobs"><p class="muted small">Nothing yet.</p></div></div>
+  </section>
+
+  <section id="detail" class="hidden">
+    <button class="back" id="back">← All recordings</button>
+    <div class="card">
+      <h2 id="d-name"></h2>
+      <div class="small muted" id="d-info"></div>
+      <audio id="player" controls preload="metadata"></audio>
+      <div id="d-work"><div class="small muted" id="d-stage"></div><div class="bar"><i id="d-bar"></i></div></div>
+      <div class="tabs"><button data-t="t" class="on">Transcript</button><button data-t="tr">Translate</button><button data-t="sm">Summary</button></div>
+
+      <div id="tab-t">
+        <div class="row small" style="margin-bottom:6px">
+          <label class="cb"><input type="checkbox" id="showts" checked> Timestamps</label>
+          <label class="cb"><input type="checkbox" id="showspk" checked> Speakers</label>
+        </div>
+        <div class="tx" id="tx"></div>
+        <div class="dl" id="dl-t" style="margin-top:10px"></div>
+      </div>
+
+      <div id="tab-tr" class="hidden">
+        <div class="row">
+          <label class="small muted">Translate to <select id="tgt"></select></label>
+          <label class="small muted">Translator <select id="eng">
+            <option value="auto">Auto (best for these languages)</option><option value="ai">AI: Qwen3 (most natural)</option>
+            <option value="nllb">NLLB-200 (200 languages)</option></select></label>
+          <button class="primary" id="go-tr">Translate</button>
+        </div>
+        <div id="tr-work" class="hidden"><div class="small muted" id="tr-stage"></div><div class="bar"><i id="tr-bar"></i></div></div>
+        <div class="tx" id="trx" style="margin-top:10px"></div>
+        <div class="dl" id="dl-tr" style="margin-top:10px"></div>
+      </div>
+
+      <div id="tab-sm" class="hidden">
+        <div class="row">
+          <label class="small muted">Write in <select id="slang"></select></label>
+          <label class="small muted">Length <select id="sdet"><option value="short">Short</option><option value="normal" selected>Normal</option><option value="detailed">Detailed</option></select></label>
+          <label class="small muted">From <select id="sfrom"><option value="transcript">Transcript</option><option value="translation">Translation</option></select></label>
+          <button class="primary" id="go-sm">Summarise</button>
+        </div>
+        <div id="sm-work" class="hidden"><div class="small muted" id="sm-stage"></div><div class="bar"><i id="sm-bar"></i></div></div>
+        <div class="sum" id="sumx"></div>
+        <div class="row" style="margin-top:10px"><button id="copy-sm" class="hidden">Copy summary</button></div>
+        <p class="small muted">Made by an AI model on the PC — check important details against the transcript.</p>
+      </div>
+    </div>
+  </section>
+</main>
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const hms = t => { t = Math.max(0, Math.floor(t || 0)); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, s = t % 60;
+  return h ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}` : `${m}:${String(s).padStart(2,"0")}`; };
+const store = { get(k, d) { try { const v = localStorage.getItem("dltr." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+                set(k, v) { try { localStorage.setItem("dltr." + k, JSON.stringify(v)); } catch {} } };
+let INFO = null, CUR = null, DET = null, NOW = -1, renderedFor = "", trRendered = "", lastSum = "";
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({error: r.statusText}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+
+async function init() {
+  try { INFO = await api("/api/info"); } catch (e) { $("#pc").textContent = "Can't reach the PC: " + e.message; return; }
+  $("#pc").innerHTML = `${esc(INFO.pc)}<br><span class="small">${esc(INFO.device)}</span>`;
+  const L = $("#lang"); for (const l of INFO.languages) L.add(new Option(`${l.name}`, l.code));
+  L.value = store.get("lang", "");
+  const M = $("#model"); for (const m of INFO.models) M.add(new Option(m.label + (m.installed ? "" : "  (downloads first)"), m.key));
+  M.value = store.get("model", INFO.model); if (!M.value) M.value = INFO.model;
+  $("#mixed").checked = store.get("mixed", false); $("#speakers").checked = store.get("speakers", INFO.speakers);
+  for (const sel of ["#tgt", "#slang"]) { const S = $(sel); for (const t of INFO.targets) S.add(new Option(t.name, t.code)); }
+  $("#tgt").value = store.get("tgt", "eng_Latn"); $("#slang").value = store.get("slang", "eng_Latn");
+  $("#eng").value = store.get("eng", "auto");
+  for (const [id, key] of [["#lang","lang"],["#model","model"],["#tgt","tgt"],["#slang","slang"],["#eng","eng"]])
+    $(id).addEventListener("change", e => store.set(key, e.target.value));
+  for (const [id, key] of [["#mixed","mixed"],["#speakers","speakers"]]) $(id).addEventListener("change", e => store.set(key, e.target.checked));
+  poll();
+  if (location.hash.length > 1) open(location.hash.slice(1));
+}
+
+// ---------------------------------------------------------------- upload
+const drop = $("#drop"), file = $("#file");
+drop.onclick = () => file.click();
+file.onchange = () => { for (const f of file.files) upload(f); file.value = ""; };
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); for (const f of e.dataTransfer.files) upload(f); };
+
+function upload(f) {
+  const row = document.createElement("div");
+  row.className = "small"; row.style.marginTop = "10px";
+  row.innerHTML = `<div>Uploading ${esc(f.name)} …</div><div class="bar"><i></i></div>`;
+  $("#ups").appendChild(row);
+  const x = new XMLHttpRequest();
+  x.open("POST", "/api/upload?name=" + encodeURIComponent(f.name));
+  x.upload.onprogress = e => { if (e.lengthComputable) row.querySelector("i").style.width = (100 * e.loaded / e.total) + "%"; };
+  x.onload = () => {
+    let j = {}; try { j = JSON.parse(x.responseText); } catch {}
+    if (x.status !== 200) { row.innerHTML = `<span class="err">${esc(f.name)}: ${esc(j.error || x.statusText)}</span>`; return; }
+    row.remove(); poll();
+  };
+  x.onerror = () => { row.innerHTML = `<span class="err">${esc(f.name)}: the upload failed (is the PC still sharing?)</span>`; };
+  x.send(f);
+}
+
+// ---------------------------------------------------------------- list
+const BUSY = new Set(["queued", "working", "downloading"]);
+let pollTimer = null;
+async function poll() {
+  clearTimeout(pollTimer);
+  let d; try { d = await api("/api/jobs"); } catch (e) { $("#pc").textContent = "Lost the connection to the PC — retrying …"; pollTimer = setTimeout(poll, 3000); return; }
+  if (INFO) $("#pc").innerHTML = `${esc(INFO.pc)}<br><span class="small">${esc(d.device)}</span>`;
+  const box = $("#jobs");
+  if (!d.jobs.length) { box.innerHTML = `<p class="muted small">Nothing yet. Add a recording above.</p>`; }
+  else if (box.querySelector("p")) box.innerHTML = "";
+  // Rows are updated in place; a row is only rebuilt when its buttons change, so a tap never lands on a
+  // button that's being replaced.
+  const seen = new Set();
+  let prev = null;
+  for (const j of d.jobs) {
+    seen.add(j.id);
+    const busyJ = BUSY.has(j.state);
+    const kind = (j.state === "uploaded" || j.state === "failed" ? "s" : "") + (j.state === "done" ? "o" : "v") + (busyJ ? "b" : "r");
+    let el = box.querySelector(`.job[data-id="${j.id}"]`);
+    if (!el || el.dataset.k !== kind) {
+      const fresh = document.createElement("div"); fresh.className = "job"; fresh.dataset.id = j.id; fresh.dataset.k = kind;
+      fresh.innerHTML = `<div class="n">${esc(j.name)} <span class="small muted">${j.duration ? hms(j.duration) : ""}</span></div>
+        <span class="badge"></span>
+        ${kind.includes("s") ? `<button class="primary" data-a="start">Start</button>` : ""}
+        ${j.state === "done" ? `<button class="primary" data-a="open">Open</button>` : `<button data-a="open">View</button>`}
+        ${busyJ ? "" : `<button data-a="rm" title="Remove">✕</button>`}
+        <div class="st"></div>
+        <div class="bar" style="flex:1 1 100%"><i></i></div>`;
+      fresh.querySelector("[data-a=open]").onclick = () => open(j.id);
+      const sb = fresh.querySelector("[data-a=start]"); if (sb) sb.onclick = () => { sb.disabled = true; start(j.id); };
+      const rb = fresh.querySelector("[data-a=rm]"); if (rb) rb.onclick = async () => { if (confirm(`Remove ${j.name}?`)) { await api("/api/remove", {id: j.id}).catch(e => alert(e.message)); poll(); } };
+      if (el) el.replaceWith(fresh); else box.appendChild(fresh);
+      el = fresh;
+    }
+    const label = {uploaded: "Ready", queued: "Waiting", working: "Working", downloading: "Downloading", done: "Done", failed: "Failed"}[j.state] || j.state;
+    const b = el.querySelector(".badge"); b.className = "badge " + j.state;
+    b.textContent = label + (busyJ && j.progress ? ` · ${Math.round(j.progress * 100)}%` : "");
+    el.querySelector(".st").textContent = j.state === "queued" && j.ahead ? `Waiting — ${j.ahead} ahead` : j.stage || "";
+    el.querySelector(".bar").classList.toggle("hidden", !busyJ);
+    el.querySelector(".bar i").style.width = ((j.progress || 0) * 100) + "%";
+    if (prev ? prev.nextSibling !== el : box.firstChild !== el) box.insertBefore(el, prev ? prev.nextSibling : box.firstChild);
+    prev = el;
+  }
+  for (const el of [...box.querySelectorAll(".job")]) if (!seen.has(el.dataset.id)) el.remove();
+  const busy = d.jobs.some(j => BUSY.has(j.state));
+  pollTimer = setTimeout(poll, busy ? 1500 : 4000);
+  if (CUR) refresh();
+}
+
+async function start(id) {
+  try { await api("/api/start", {id, model: $("#model").value, language: $("#lang").value, mixed: $("#mixed").checked, speakers: $("#speakers").checked}); }
+  catch (e) { alert(e.message); }
+  poll();
+}
+
+// ---------------------------------------------------------------- detail
+function open(id) {
+  CUR = id; renderedFor = ""; trRendered = ""; lastSum = ""; NOW = -1; DET = null;
+  location.hash = id;
+  $("#home").classList.add("hidden"); $("#detail").classList.remove("hidden");
+  $("#tx").innerHTML = ""; $("#trx").innerHTML = ""; $("#sumx").innerHTML = "";
+  $("#player").removeAttribute("src"); $("#player").load();
+  window.scrollTo(0, 0);
+  refresh();
+}
+$("#back").onclick = () => { CUR = null; location.hash = ""; $("#player").pause(); $("#detail").classList.add("hidden"); $("#home").classList.remove("hidden"); poll(); };
+for (const b of document.querySelectorAll(".tabs button")) b.onclick = () => {
+  for (const x of document.querySelectorAll(".tabs button")) x.classList.toggle("on", x === b);
+  for (const t of ["t", "tr", "sm"]) $("#tab-" + t).classList.toggle("hidden", t !== b.dataset.t);
+};
+
+let refreshing = false;
+async function refresh() {
+  if (refreshing || !CUR) return; refreshing = true;
+  try { DET = await api("/api/job/" + CUR); } catch (e) { $("#d-stage").textContent = e.message; refreshing = false; return; }
+  refreshing = false;
+  const d = DET;
+  $("#d-name").textContent = d.name;
+  $("#d-info").textContent = [d.duration ? hms(d.duration) : "", d.language || "", d.speakers.length ? `${d.speakers.length} speaker${d.speakers.length > 1 ? "s" : ""}` : "", d.took ? `took ${hms(d.took)}` : ""].filter(Boolean).join(" · ");
+  const P = $("#player");
+  if (d.media && P.dataset.src !== d.media) { P.dataset.src = d.media; P.src = d.media; }
+  const busy = BUSY.has(d.state) || d.state === "uploaded" || d.state === "failed";
+  $("#d-work").classList.toggle("hidden", !busy);
+  $("#d-stage").innerHTML = d.state === "uploaded" ? `Ready. <button class="primary" id="d-start">Start</button>` : esc(d.stage || "");
+  const ds = $("#d-start"); if (ds) ds.onclick = () => start(d.id);
+  $("#d-bar").style.width = ((d.progress || 0) * 100) + "%";
+  const key = d.state + ":" + d.segments.length + ":" + $("#showts").checked + $("#showspk").checked;
+  if (key !== renderedFor) { renderedFor = key; renderTranscript(); }
+  renderDownloads("#dl-t", "transcript", d.state === "done");
+  renderTranslation(); renderSummary();
+}
+$("#showts").onchange = $("#showspk").onchange = () => { renderedFor = ""; trRendered = ""; refresh(); };
+
+function paragraphs(segs, names) {
+  const out = []; let cur = [], last = null;
+  segs.forEach((s, i) => {
+    const turn = names && cur.length && s.speaker !== cur[cur.length - 1].s.speaker;
+    if (cur.length && (s.start - last > 2 || turn)) { out.push(cur); cur = []; }
+    cur.push({s, i}); last = s.end;
+  });
+  if (cur.length) out.push(cur);
+  return out;
+}
+
+function renderTranscript() {
+  const d = DET, tx = $("#tx");
+  if (!d.segments.length) { tx.innerHTML = `<p class="muted">${d.state === "done" ? "No speech found." : "The transcript appears here."}</p>`; return; }
+  const ts = $("#showts").checked, names = $("#showspk").checked && d.speakers.length ? d.speakers : null;
+  let html = "", prevSpk = undefined;
+  for (const para of paragraphs(d.segments, names)) {
+    const sp = para[0].s.speaker;
+    if (names && sp !== prevSpk) html += `<div class="spk">${esc(names[sp] || "Speaker " + (sp + 1))}</div>`;
+    prevSpk = sp;
+    html += "<p>" + para.map(({s, i}) => `<span class="seg" data-i="${i}">${ts ? `<span class="ts">(${hms(s.start)})</span>` : ""}${esc(s.text)}</span>`).join(" ") + "</p>";
+  }
+  tx.innerHTML = html; NOW = -1;
+}
+$("#tx").onclick = e => { const s = e.target.closest(".seg"); if (s) seek(+s.dataset.i); };
+$("#trx").onclick = e => { const s = e.target.closest("[data-i]"); if (s) seek(+s.dataset.i); };
+
+function seek(i) {
+  if (!DET || !DET.segments[i]) return;
+  const P = $("#player"); P.currentTime = DET.segments[i].start + 0.01; P.play().catch(() => {});
+  mark(i, true);
+}
+function mark(i, scroll) {
+  if (i === NOW) return; NOW = i;
+  for (const el of document.querySelectorAll(".now")) el.classList.remove("now");
+  for (const el of document.querySelectorAll(`[data-i="${i}"]`)) { el.classList.add("now"); if (scroll && el.offsetParent) el.scrollIntoView({block: "nearest", behavior: "smooth"}); }
+}
+$("#player").ontimeupdate = () => {
+  if (!DET || !DET.segments.length) return;
+  const t = $("#player").currentTime; let i = -1;
+  for (let k = 0; k < DET.segments.length; k++) { if (DET.segments[k].start <= t + 0.05) i = k; else break; }
+  if (i >= 0) mark(i, !$("#player").paused);
+};
+
+function renderDownloads(sel, which, ready) {
+  const box = $(sel);
+  if (!ready) { box.innerHTML = ""; return; }
+  const ts = $("#showts").checked ? 1 : 0, sp = $("#showspk").checked ? 1 : 0;
+  box.innerHTML = `<span class="small muted" style="align-self:center">Download:</span>` + INFO.formats.map(f =>
+    `<a class="btn" href="/api/export/${CUR}?fmt=${f}&which=${which}&ts=${ts}&speakers=${sp}" download>${f.toUpperCase()}</a>`).join("");
+}
+
+// ---------------------------------------------------------------- translate
+$("#go-tr").onclick = async () => {
+  try { await api("/api/translate", {id: CUR, tgt: $("#tgt").value, engine: $("#eng").value}); trRendered = ""; poll(); } catch (e) { alert(e.message); }
+};
+function renderTranslation() {
+  const d = DET, tr = d.tr;
+  $("#go-tr").disabled = d.state !== "done" || (tr && BUSY.has(tr.state));
+  const busy = tr && (BUSY.has(tr.state) || tr.state === "failed");
+  $("#tr-work").classList.toggle("hidden", !busy);
+  if (tr) { $("#tr-stage").innerHTML = tr.state === "failed" ? `<span class="err">${esc(tr.stage)}</span>` : esc(tr.stage || ""); $("#tr-bar").style.width = ((tr.progress || 0) * 100) + "%"; }
+  if (!tr || !tr.texts) { if (d.state !== "done") $("#trx").innerHTML = `<p class="muted small">Transcribe the recording first.</p>`; else if (!tr) $("#trx").innerHTML = ""; renderDownloads("#dl-tr", "translation", false); return; }
+  const key = tr.state + ":" + tr.texts.filter(t => t !== null).length + ":" + $("#showts").checked + $("#showspk").checked;
+  if (key === trRendered) return; trRendered = key;
+  const ts = $("#showts").checked, names = $("#showspk").checked && d.speakers.length ? d.speakers : null;
+  let html = `<div class="small muted" style="margin-bottom:4px">${esc(tr.target_name)}${tr.engine ? " · " + (tr.engine === "ai" ? "AI: Qwen3" : "NLLB-200") : ""}</div>`, prev;
+  d.segments.forEach((s, i) => {
+    if (names && s.speaker !== prev) html += `<div class="spk">${esc(names[s.speaker] || "Speaker " + (s.speaker + 1))}</div>`;
+    prev = s.speaker;
+    const t = tr.texts[i];
+    html += `<div class="pair" data-i="${i}"><div class="o">${ts ? `<span class="ts">(${hms(s.start)})</span>` : ""}${esc(s.text)}</div><div>${t === null ? '<span class="muted">…</span>' : esc(t)}</div></div>`;
+  });
+  $("#trx").innerHTML = html;
+  if (NOW >= 0) { const n = NOW; NOW = -1; mark(n, false); }
+  renderDownloads("#dl-tr", "translation", tr.state === "done");
+}
+
+// ---------------------------------------------------------------- summary
+$("#go-sm").onclick = async () => {
+  try { await api("/api/summarize", {id: CUR, lang: $("#slang").value, detail: $("#sdet").value, which: $("#sfrom").value}); lastSum = ""; poll(); } catch (e) { alert(e.message); }
+};
+function md(text) {
+  let html = "", list = false;
+  for (const raw of text.split("\n")) {
+    const l = raw.trim().replace(/\*\*/g, "");
+    if (/^#{1,4}\s/.test(l)) { if (list) { html += "</ul>"; list = false; } html += `<h3>${esc(l.replace(/^#{1,4}\s*/, ""))}</h3>`; }
+    else if (/^[-*•]\s+/.test(l)) { if (!list) { html += "<ul>"; list = true; } html += `<li>${esc(l.replace(/^[-*•]\s+/, ""))}</li>`; }
+    else if (l) { if (list) { html += "</ul>"; list = false; } html += `<p>${esc(l)}</p>`; }
+  }
+  return html + (list ? "</ul>" : "");
+}
+function renderSummary() {
+  const d = DET, sm = d.sum;
+  $("#go-sm").disabled = d.state !== "done" || (sm && BUSY.has(sm.state));
+  $("#sfrom").options[1].disabled = !(d.tr && d.tr.state === "done");
+  const busy = sm && (BUSY.has(sm.state) || sm.state === "failed");
+  $("#sm-work").classList.toggle("hidden", !busy);
+  if (sm) { $("#sm-stage").innerHTML = sm.state === "failed" ? `<span class="err">${esc(sm.stage)}</span>` : esc(sm.stage || ""); $("#sm-bar").style.width = ((sm.progress || 0) * 100) + "%"; }
+  const text = sm ? sm.text || "" : "";
+  if (text !== lastSum) { lastSum = text; $("#sumx").innerHTML = text ? md(text) : (d.state === "done" ? "" : `<p class="muted small">Transcribe the recording first.</p>`); }
+  $("#copy-sm").classList.toggle("hidden", !(sm && sm.state === "done"));
+}
+$("#copy-sm").onclick = async () => {
+  const text = (DET && DET.sum && DET.sum.text || "").replace(/\*\*/g, "").replace(/^#{1,4}\s*/gm, "").replace(/^\s*[-*]\s+/gm, "• ");
+  try { await navigator.clipboard.writeText(text); $("#copy-sm").textContent = "Copied ✓"; }
+  catch { const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); $("#copy-sm").textContent = "Copied ✓"; }
+  setTimeout(() => $("#copy-sm").textContent = "Copy summary", 1500);
+};
+
+setInterval(() => { if (CUR && DET && (BUSY.has(DET.state) || (DET.tr && BUSY.has(DET.tr.state)) || (DET.sum && BUSY.has(DET.sum.state)))) refresh(); }, 1000);
+init();
+</script>
+</body>
+</html>

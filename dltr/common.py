@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "dl_transcribe"
-APP_VERSION = "1.2"
+APP_VERSION = "1.3"
 RELEASE_ASSET = "dl_transcribe-windows.zip"
 
 MEDIA_EXT = {
@@ -78,7 +78,7 @@ MODELS = {
     "small": ("small — fast, decent (480 MB)", 484),
     "medium": ("medium — good, slower (1.5 GB)", 1530),
     "large-v3-turbo": ("large-v3-turbo — best speed/accuracy (1.6 GB)", 1620),
-    "large-v3": ("large-v3 — most accurate, needed for translation (3.1 GB)", 3090),
+    "large-v3": ("large-v3 — most accurate, hardest audio (3.1 GB)", 3090),
 }
 
 # Whisper's languages (code -> name). Cantonese (yue) is large-v3 / turbo only.

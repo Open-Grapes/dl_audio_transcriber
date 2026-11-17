@@ -95,6 +95,8 @@ class App(BaseTk):
         self.has_gpu, self.device_name = False, "checking…"
         self.models_win = None
         self.update_win = None
+        self.wifi_win = None
+        self.sharing = None          # web.Sharing while "Share via Wi-Fi" is on
         self.find_hits, self.find_i = [], -1
         # player
         self.player = media.Player()
@@ -212,6 +214,8 @@ class App(BaseTk):
         self.device_lbl = ttk.Label(top, text="Checking GPU …", style="Muted.TLabel")
         self.update_btn = ttk.Button(top, text="Check for updates", command=self.open_updates)
         self.update_btn.pack(side="right", padx=(10, 0))
+        self.wifi_btn = ttk.Button(top, text="Share via Wi-Fi", command=self.open_wifi)
+        self.wifi_btn.pack(side="right", padx=(10, 0))
         self.device_lbl.pack(side="right")
         self.warn_lbl = ttk.Label(self, style="Warn.TLabel", wraplength=900, justify="left")
 
@@ -1129,6 +1133,25 @@ class App(BaseTk):
             return
         self.update_win = UpdateWindow(self)
 
+    def open_wifi(self):
+        from .wifi_win import WifiWindow
+        if self.wifi_win is not None and self.wifi_win.alive():
+            self.wifi_win.win.lift()
+            self.wifi_win.win.focus_force()
+            return
+        self.wifi_win = WifiWindow(self)
+
+    def stop_sharing(self):
+        s, self.sharing = self.sharing, None
+        if s is not None:
+            threading.Thread(target=s.stop, daemon=True).start()
+        self.set_wifi_badge()
+
+    def set_wifi_badge(self):
+        on = self.sharing is not None
+        self.wifi_btn.configure(text="Wi-Fi sharing: on" if on else "Share via Wi-Fi",
+                                style="Accent.TButton" if on else "TButton")
+
     def set_update_badge(self, version):
         if version:
             self.update_btn.configure(text=f"Update available: {version}", style="Accent.TButton")
@@ -1638,7 +1661,9 @@ class App(BaseTk):
         uw = self.update_win
         if uw is not None and uw.mwk is not None:
             uw.mwk.kill()
-        self.ai.close()              # a download in the Models window (resumes next time)
+        self.ai.close()
+        if self.sharing is not None:
+            self.sharing.stop()              # a download in the Models window (resumes next time)
         self.player.close()
         self.wk.close()
         self.destroy()
