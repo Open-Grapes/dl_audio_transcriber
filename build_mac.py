@@ -58,6 +58,7 @@ def pyinstaller():
        "--collect-all", "tkinterdnd2", "--collect-all", "faster_whisper", "--collect-binaries", "ctranslate2",
        "--collect-submodules", "av", "--collect-all", "fpdf", "--collect-all", "uharfbuzz",
        "--collect-submodules", "fontTools", "--collect-all", "sherpa_onnx", "--collect-data", "certifi",
+       "--collect-all", "langid", "--collect-all", "tokenizers",
        "--hidden-import", "AVFoundation", "--hidden-import", "Foundation", "--hidden-import", "objc",
        "--distpath", WORK / "dist", "--workpath", WORK / "work", "--specpath", WORK, ROOT / "run.py")
 
@@ -105,6 +106,8 @@ USE
 - Drop audio or video files on the window, press Start.
 - Click any sentence to play it; Edit transcript to fix words; Find (Cmd+F).
 - Tick formats (PDF, TXT, SRT, VTT, JSON, CSV) and press Export.
+- Translate tab: import a transcript (or paste text), pick the languages, press Translate.
+- Summary tab: an AI summary (overview, key points, key moments) in the language you pick.
 - Check for updates (top right) installs new versions.
 
 Runs on the Mac's processor (there's no NVIDIA GPU on a Mac): "small" or "base" are quick, "large-v3-turbo"
@@ -209,6 +212,14 @@ def smoke_test():
     assert st["pdf_bytes"] > 10000, "PDF too small"
     if not st["playing"]:
         print("NOTE: the player didn't report playing (this build machine may have no audio device)", flush=True)
+
+    # 2b. Translation (NLLB-200 + the Qwen3 AI model) and an AI summary, on the Mac's processor.
+    aj = t / "ai.json"
+    subprocess.run([str(binary), "--selftest-ai", str(aj)], timeout=2400)
+    aires = json.loads(aj.read_text(encoding="utf-8"))
+    print("AI selftest:", json.dumps(aires, ensure_ascii=False, indent=1), flush=True)
+    assert "error" not in aires, aires.get("error")
+    assert all(aires["nllb"]) and aires["ai"][0] and len(aires["summary"]) > 80, "translation / summary empty"
 
     # 3. Check for updates reaches GitHub from inside the app (certificates, network).
     cu = t / "update.json"

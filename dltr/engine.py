@@ -41,15 +41,20 @@ def _dir_size(p):
 def download(name, progress=None):
     """Download a model into MODELS_DIR (resumes if interrupted). progress(fraction, text)."""
     from faster_whisper.utils import download_model
+    from . import models
     dest = model_dir(name)
     dest.mkdir(parents=True, exist_ok=True)
-    total = MODELS.get(name, ("", 1000))[1] * 1e6
+    total = models.size_mb(name) * 1e6
     done = threading.Event()
     err = []
 
     def run():
         try:
-            download_model(name, output_dir=str(dest))
+            if name in models.EXTRA:          # translation / AI models
+                from huggingface_hub import snapshot_download
+                snapshot_download(models.REPOS[name], local_dir=str(dest), allow_patterns=models.DOWNLOAD_PATTERNS)
+            else:
+                download_model(name, output_dir=str(dest))
         except Exception as e:   # network down, disk full …
             err.append(e)
         finally:
@@ -271,10 +276,12 @@ def paragraphs(result):
     or once a paragraph gets long."""
     paras, cur, last_end = [], [], None
     spk = bool(result.get("speakers"))
+    untimed = result.get("no_times")          # pasted text: keep its own paragraphs
     for s in result["segments"]:
         long_para = sum(len(x["text"]) for x in cur) > 600 and cur and cur[-1]["text"][-1:] in ".?!。？！"
         turn = spk and cur and s.get("speaker") != cur[-1].get("speaker")
-        if cur and (s["start"] - last_end > 2.0 or long_para or turn):
+        gap = s.get("para") if untimed else (last_end is not None and s["start"] - last_end > 2.0)
+        if cur and (gap or long_para or turn):
             paras.append(cur)
             cur = []
         cur.append(s)
@@ -301,6 +308,7 @@ def labelled(result):
 def to_text(result, timestamps=False):
     """Readable paragraphs; with timestamps each sentence starts with (m:ss) like TurboScribe;
     with speakers each turn starts with 'Speaker 1:'."""
+    timestamps = timestamps and not result.get("no_times")
     j = _joiner(result)
     out = []
     for name, para in labelled(result):
@@ -415,6 +423,7 @@ else:                                                    # macOS
 
 def to_pdf(result, timestamps=False):
     """A clean, printable transcript (bytes)."""
+    timestamps = timestamps and not result.get("no_times")
     from fpdf import FPDF
     import logging
     logging.getLogger("fontTools").setLevel(logging.ERROR)   # chatty about font subsetting
@@ -444,13 +453,15 @@ def to_pdf(result, timestamps=False):
     pdf.set_title(Path(result["file"]).stem)
     pdf.set_creator("dl_transcribe")
     pdf.add_page()
-    title = Path(result["file"]).stem + (" (English)" if result["task"] == "translate" else "")
+    target = result.get("target_name") or "English"
+    title = Path(result["file"]).stem + (f" ({target})" if result["task"] == "translate" else "")
     pdf.set_font(main, size=18)
     pdf.set_text_color(20, 20, 20)
     pdf.multi_cell(0, 9, title, new_x="LMARGIN", new_y="NEXT")
-    meta = [fmt_hms(result.get("duration") or 0), lang_name(result.get("spoken_language"))]
+    meta = [] if result.get("no_times") else [fmt_hms(result.get("duration") or 0)]
+    meta.append(result.get("source_name") or lang_name(result.get("spoken_language")))
     if result["task"] == "translate":
-        meta[-1] += " → English"
+        meta[-1] += f" → {target}"
     meta.append(f"model {result.get('model', '')}")
     pdf.set_font(main, size=9)
     pdf.set_text_color(120, 120, 120)

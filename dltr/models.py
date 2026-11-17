@@ -1,4 +1,5 @@
-"""The Whisper models: what each one is, whether it's on this PC, update checks and removal.
+"""The models: Whisper (speech to text), NLLB-200 (translation) and Qwen3 (AI translation + summaries):
+what each one is, whether it's on this PC, update checks and removal.
 Downloading itself runs in a worker process (see worker.py) so it can be cancelled at once."""
 
 import datetime
@@ -14,9 +15,22 @@ REPOS = {
     "medium": "Systran/faster-whisper-medium",
     "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
     "large-v3": "Systran/faster-whisper-large-v3",
+    "nllb-3.3b": "OpenNMT/nllb-200-3.3B-ct2-int8",
+    "nllb-1.3b": "OpenNMT/nllb-200-distilled-1.3B-ct2-int8",
+    "qwen3-4b": "jncraton/Qwen3-4B-Instruct-2507-ct2-int8",
 }
 FILES = ("config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.json",
-         "vocabulary.txt")
+         "vocabulary.txt", "shared_vocabulary.json", "special_tokens_map.json", "tokenizer_config.json",
+         "generation_config.json")
+DOWNLOAD_PATTERNS = ["*.json", "model.bin", "*.txt", "*.model"]
+
+# Translation / AI models: key -> (label, download MB, type, license)
+EXTRA = {
+    "qwen3-4b": ("Qwen3-4B AI (summaries + natural translation)", 4040, "AI", "Apache-2.0"),
+    "nllb-3.3b": ("NLLB-200 3.3B translator (200 languages)", 3380, "Translation", "CC-BY-NC-4.0"),
+    "nllb-1.3b": ("NLLB-200 1.3B translator (faster)", 1400, "Translation", "CC-BY-NC-4.0"),
+}
+ALL = list(MODELS) + list(EXTRA)
 
 # key -> (speed, accuracy, what it's for)
 INFO = {
@@ -30,9 +44,30 @@ INFO = {
     "large-v3-turbo": ("Fast (GPU)", "Excellent", "Best all-rounder on an NVIDIA GPU: almost large-v3 accuracy "
                                                   "at many times the speed. Can't translate (the app switches to "
                                                   "large-v3 for Translate to English)."),
-    "large-v3": ("Slow", "Best", "Most accurate, best for hard audio and rare languages, and the model used "
-                                 "for Translate to English. Slow without a GPU."),
+    "large-v3": ("Slow", "Best", "Most accurate, best for hard audio, rare languages and Cantonese. "
+                                 "Slow without a GPU."),
+    "qwen3-4b": ("Fast (GPU)", "Excellent", "AI model (Alibaba Qwen3-4B-Instruct) for the Summary tab, and for "
+                                            "natural-sounding translation between the big languages (English, "
+                                            "Chinese, Cantonese, Japanese, Korean, Malay, European languages). "
+                                            "Slower without an NVIDIA GPU."),
+    "nllb-3.3b": ("Fast", "Excellent", "Meta's NLLB-200 translator: 200 languages (incl. Tamil and other "
+                                       "languages the AI model is weaker at). Quick on a CPU too. "
+                                       "Free for non-commercial use."),
+    "nllb-1.3b": ("Faster", "Very good", "Smaller NLLB-200: same 200 languages, about twice as fast, slightly "
+                                         "less accurate. Free for non-commercial use."),
 }
+
+
+def kind(key):
+    return EXTRA[key][2] if key in EXTRA else "Speech to text"
+
+
+def size_mb(key):
+    return EXTRA[key][1] if key in EXTRA else MODELS[key][1]
+
+
+def license_of(key):
+    return EXTRA[key][3] if key in EXTRA else "MIT"
 
 
 def recommended(has_gpu):
@@ -46,8 +81,11 @@ def path(key):
 def installed(key):
     """All the files are there (model.bin alone can land before the tokenizer during a download)."""
     p = path(key)
-    return all((p / f).exists() for f in ("config.json", "model.bin", "tokenizer.json")) and \
-        any((p / f).exists() for f in ("vocabulary.json", "vocabulary.txt"))
+    if not all((p / f).exists() for f in ("config.json", "model.bin", "tokenizer.json")):
+        return False
+    if key in EXTRA:
+        return True
+    return any((p / f).exists() for f in ("vocabulary.json", "vocabulary.txt"))
 
 
 def disk_bytes(key=None):
@@ -112,7 +150,7 @@ def remove(key):
 
 
 def remove_all():
-    for k in MODELS:
+    for k in ALL:
         remove(k)
 
 

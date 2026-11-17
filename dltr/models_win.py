@@ -12,8 +12,8 @@ from .worker import Worker
 
 
 class ModelsWindow:
-    COLS = (("speed", "Speed", 90), ("accuracy", "Accuracy", 80), ("size", "Size", 80),
-            ("status", "Status", 200), ("version", "Downloaded", 100), ("license", "License", 70))
+    COLS = (("type", "Type", 110), ("speed", "Speed", 80), ("accuracy", "Accuracy", 75), ("size", "Size", 70),
+            ("status", "Status", 190), ("version", "Downloaded", 95), ("license", "License", 100))
 
     def __init__(self, app):
         self.app = app
@@ -25,7 +25,7 @@ class ModelsWindow:
         self.cancel = threading.Event()
         w = self.win = tk.Toplevel(app)
         w.title("Models")
-        w.geometry("1080x500")
+        w.geometry("1180x540")
         w.minsize(760, 380)
         w.transient(app)
         w.configure(bg=app.pal["bg"])
@@ -100,7 +100,7 @@ class ModelsWindow:
             return False
 
     def _sel(self, want_installed=None):
-        keys = [k for k in self.tree.selection() if k in MODELS]
+        keys = [k for k in self.tree.selection() if k in models.ALL]
         if want_installed is not None:
             keys = [k for k in keys if models.installed(k) == want_installed]
         return keys
@@ -128,7 +128,8 @@ class ModelsWindow:
         t.tag_configure("using", font=(theme.UI, 9 + theme._S, "bold"))
         rec = models.recommended(self.app.has_gpu)
         using = self.app._model_name()
-        for k, (label, mb) in MODELS.items():
+        for k in models.ALL:
+            mb = models.size_mb(k)
             speed, acc, _ = models.INFO[k]
             inst = models.installed(k)
             rs = self.remote.get(k)
@@ -144,10 +145,13 @@ class ModelsWindow:
                 status, tag = "Installed", "installed"
             if inst and k == using:
                 status += " · in use"
+            elif inst and k in models.EXTRA:
+                status += " · used by " + ("Summary + Translate" if k == "qwen3-4b" else "Translate")
             size = models.fmt_size(models.disk_bytes(k)) if inst else models.fmt_size(mb * 1e6)
             name = ("★ " if k in rec else "    ") + k
             t.insert("", "end", iid=k, text=name, tags=(tag,) + (("using",) if k == using else ()),
-                     values=(speed, acc, size, status, models.downloaded_on(k) if inst else "", "MIT"))
+                     values=(models.kind(k), speed, acc, size, status, models.downloaded_on(k) if inst else "",
+                             models.license_of(k)))
         for s in sel:
             if t.exists(s):
                 t.selection_add(s)
@@ -160,7 +164,7 @@ class ModelsWindow:
             return
         k = s[0]
         speed, acc, about = models.INFO[k]
-        extra = "" if models.installed(k) else f"  Download: about {models.fmt_size(MODELS[k][1] * 1e6)}."
+        extra = "" if models.installed(k) else f"  Download: about {models.fmt_size(models.size_mb(k) * 1e6)}."
         self.desc.configure(text=f"{k} — {about}{extra}\nhttps://huggingface.co/{models.REPOS[k]}")
 
     def _poll(self):
@@ -241,11 +245,11 @@ class ModelsWindow:
         self.download(keys)
 
     def download_all(self):
-        keys = [k for k in MODELS if not models.installed(k)]
+        keys = [k for k in models.ALL if not models.installed(k)]
         if not keys:
             messagebox.showinfo("Models", "All models are already on this PC.", parent=self.win)
             return
-        mb = sum(MODELS[k][1] for k in keys)
+        mb = sum(models.size_mb(k) for k in keys)
         if messagebox.askyesno("Download all models",
                                f"Download {len(keys)} model(s), about {models.fmt_size(mb * 1e6)}?\n\n"
                                "Then you can switch models any time without internet.", parent=self.win):
@@ -253,7 +257,7 @@ class ModelsWindow:
 
     # ------------------------------------------------------------ updates
     def check_updates(self):
-        keys = [k for k in MODELS if models.installed(k)]
+        keys = [k for k in models.ALL if models.installed(k)]
         if not keys:
             messagebox.showinfo("Models", "No models downloaded yet.", parent=self.win)
             return
@@ -328,7 +332,7 @@ class ModelsWindow:
             self._remove(keys, "Removing …")
 
     def remove_all(self):
-        keys = [k for k in MODELS if models.installed(k)]
+        keys = [k for k in models.ALL if models.installed(k)]
         if not keys:
             messagebox.showinfo("Models", "No models downloaded.", parent=self.win)
             return
@@ -341,6 +345,9 @@ class ModelsWindow:
     # ------------------------------------------------------------ other
     def use_selected(self):
         s = self._sel()
+        if s and s[0] in models.EXTRA:
+            self.status.configure(text=f"{s[0]} is used automatically by the Translate / Summary tabs.")
+            return
         if s:
             self.app.set_model(s[0])
             self.status.configure(text=f"Using {s[0]}" + ("" if models.installed(s[0]) else

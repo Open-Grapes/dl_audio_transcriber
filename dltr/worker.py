@@ -42,6 +42,20 @@ def _main(jobs, out, force_cpu):
                             ("prog", jid, (i + (f or 0)) / len(job["models"]), t)))
                 out.put(("downloaded", jid))
                 continue
+            if kind == "translate":
+                from . import ai
+                res = ai.translate(job["texts"], job.get("src"), job["tgt"], job.get("engine", "auto"),
+                                   progress=lambda f, t: out.put(("prog", jid, f, t)),
+                                   on_text=lambda i, t: out.put(("tseg", jid, i, t)), hint=job.get("hint"))
+                out.put(("tdone", jid, res, time.time() - t0))
+                continue
+            if kind == "summarize":
+                from . import ai
+                text = ai.summarize(job["text"], job.get("lang", "eng_Latn"), job.get("detail", "normal"),
+                                    job.get("times", True), progress=lambda f, t: out.put(("prog", jid, f, t)),
+                                    on_text=lambda t: out.put(("stext", jid, t)))
+                out.put(("sdone", jid, text, time.time() - t0))
+                continue
             stage = {"t": t0}
 
             def prog(frac, text):
@@ -118,6 +132,6 @@ class Worker:
                 return
             if gen != self._gen:
                 return
-            if msg[0] in ("done", "fail", "downloaded"):
+            if msg[0] in ("done", "fail", "downloaded", "tdone", "sdone"):
                 self.busy_id = None
             self.on_event(*msg)

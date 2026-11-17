@@ -14,8 +14,9 @@ No length limit, no upload, no account. Uses Whisper (via [faster-whisper](https
 - **Check for updates** (top right) compares this version with the latest release on GitHub and, with **Update all**, downloads it, swaps the files when the app closes and restarts it. It also updates downloaded models. Settings and models are kept.
 - **Speakers** (optional): tick *Speakers (who said what)* to label each turn *Speaker 1*, *Speaker 2* … (Auto finds how many, or pick the number). Click a speaker name to rename it everywhere or to move a wrongly labelled part to another speaker. Runs offline with sherpa-onnx (pyannote segmentation 3.0, MIT + 3D-Speaker ERes2Net, Apache-2.0; ~45 MB, included).
 - **99 languages**, auto-detected — including English, Mandarin, Cantonese, Malay, Tamil, Indonesian, Thai, Vietnamese, Tagalog, Japanese, Korean, Hindi.
-- **Translate to English** from any of them.
-- **Mixed languages**: tick this for recordings that switch language (e.g. English ↔ Mandarin); language is detected per section instead of once.
+- **Translate tab**: translate a transcript (or any pasted text) into any of **200 languages**, offline. Every sentence keeps its timestamp and speaker, the original and the translation are shown one above the other, and clicking a sentence highlights its match in both (and plays it). Export the translation as PDF / TXT / SRT / VTT / JSON / CSV.
+- **Summary tab**: an offline **AI summary** of a transcript, translation or pasted text: overview, key points, key moments with their times and action items, in the language you pick.
+- **Mixed languages** (Transcribe tab): tick this for recordings that switch language (e.g. English ↔ Mandarin); language is detected per section instead of once.
 - **Vocabulary** box: type names, jargon or spellings (e.g. `Damien, Tanjong Pagar, CPF, Kubernetes`) to steer spelling.
 - **Windows 10 / 11** (64-bit) and **macOS 14+ on Apple Silicon** (M1 or newer).
 
@@ -62,9 +63,26 @@ Closing the window with transcripts that were never exported asks first.
 
 The progress bar and the row show the same percentage, and the status line shows the elapsed time. While it runs, **Start** turns into a red **Stop** button that stops the current file straight away. Transcription runs in a separate background process, so the window never freezes.
 
-### Models
+### Translate
 
-None are included in the download. The first time you press Start with a model that isn't on the PC yet, the app asks: **Download <model>** (just that one) or **Download all** (every model, ~6.9 GB, so you can switch later without internet). Models are saved to `%LOCALAPPDATA%\dl_transcribe\models`. After that, everything runs offline.
+1. On the **Transcribe** tab, click the transcript you want. On the **Translate** tab press **Import from Transcribe** (or **Paste text** to translate anything, e.g. text copied from a website or a chat).
+2. **From**: *Auto-detect* (it works sentence by sentence, so recordings that mix English, Chinese, Japanese … are fine) or pick the language if it guesses wrong. **To**: any of 200 languages. Type in either list to search it.
+3. **Translator**:
+   - *Auto* (default) uses the AI model (Qwen3) when both languages are ones it handles well (English, Chinese, Cantonese, Japanese, Korean, Malay, Indonesian, Thai, Vietnamese, Tagalog, the main European languages …) and the PC has an NVIDIA GPU; otherwise NLLB-200.
+   - *AI: Qwen3*: most natural wording, uses the sentences around each one for context.
+   - *NLLB-200*: Meta's translator for 200 languages (best for Tamil and other less common languages), quick even without a GPU.
+4. Press **Translate** (nothing runs before that; it turns into **Stop** while working). The first time it offers to download the model it needs (one time).
+5. Click any sentence in either box: both highlight the pair, and for a transcript it plays from there (**Play / Pause** too); the highlight follows the audio. **Export** saves the translation with the formats and folder chosen on the Transcribe tab, as `name_zh-Hans.pdf`, `name_ja.srt` …
+
+## Summary
+
+Pick what to summarise (the **Transcript** selected on the Transcribe tab, the **Translation**, or **Pasted text**), the language to **write in** and the **length**, then press **Summarise**. You get an overview, key points, key moments with their `(m:ss)` times and action items (when there are any). Long recordings are read part by part, then summarised as a whole. **Copy** or **Save as…** (.txt or .md). It's made by an AI model on your PC, so check important details against the transcript.
+
+On an RTX 4090 a summary of a few minutes of speech takes a few seconds and translation about 3 sentences a second; without an NVIDIA GPU (and on a Mac) expect minutes for a long recording.
+
+## Models
+
+None are included in the download (the translation and AI models download the first time you use the Translate or Summary tab). The first time you press Start with a model that isn't on the PC yet, the app asks: **Download <model>** (just that one) or **Download all** (every model, ~6.9 GB, so you can switch later without internet). Models are saved to `%LOCALAPPDATA%\dl_transcribe\models`. After that, everything runs offline.
 
 Pick a model from the **Model** drop list (downloaded ones are marked ✓), or press **Models…** to manage them: see speed, accuracy, size and status for each one; **Download recommended / selected / all**; **Check for updates** and **Install updates**; **Remove selected / all**; **Use selected model**; and **Open folder**. Downloads there can be cancelled and resume where they stopped.
 
@@ -83,7 +101,9 @@ Nothing to install or configure. The app checks the PC every time it starts (sho
 | small | 480 MB | default on PCs without an NVIDIA GPU |
 | medium | 1.5 GB | good accuracy on CPU, slower |
 | **large-v3-turbo** | 1.6 GB | **default** — near large-v3 accuracy at ~6–8× the speed |
-| large-v3 | 3.1 GB | hardest audio; also used automatically for **Translate to English** (turbo can't translate) |
+| large-v3 | 3.1 GB | hardest audio, rare languages, Cantonese |
+| Qwen3-4B AI | 4.0 GB | Summary tab + natural translation (Apache-2.0) |
+| NLLB-200 3.3B / 1.3B | 3.4 / 1.4 GB | Translate tab, 200 languages (free for non-commercial use, CC-BY-NC-4.0) |
 
 Speed on an RTX 4090 with large-v3-turbo: a 1-hour recording took about 18 seconds. CPU-only is much slower (use small or base there).
 
@@ -115,4 +135,4 @@ gh run download -n dl_transcribe-mac-apple-silicon -D dist\MacOS
 
 ## Licenses
 
-Whisper models (MIT, OpenAI) via faster-whisper / CTranslate2 (MIT). Speaker detection: sherpa-onnx (Apache-2.0), pyannote segmentation 3.0 (MIT), 3D-Speaker ERes2Net (Apache-2.0).
+Whisper models (MIT, OpenAI) via faster-whisper / CTranslate2 (MIT). Translation: NLLB-200 (Meta, CC-BY-NC-4.0, non-commercial use) and Qwen3-4B-Instruct-2507 (Alibaba, Apache-2.0), CTranslate2 conversions by OpenNMT and jncraton. Language detection: langid.py (BSD). Speaker detection: sherpa-onnx (Apache-2.0), pyannote segmentation 3.0 (MIT), 3D-Speaker ERes2Net (Apache-2.0).

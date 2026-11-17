@@ -137,7 +137,7 @@ class UpdateWindow:
                 err = f"Update check failed: {e}"
             self._ui(lambda: self._show_app(info, err))
             ups, merr = [], None
-            for k in MODELS:
+            for k in models.ALL:
                 if not models.installed(k):
                     continue
                 try:
@@ -169,7 +169,7 @@ class UpdateWindow:
 
     def _show_models(self, ups, err):
         self.model_updates = ups
-        have = [k for k in MODELS if models.installed(k)]
+        have = [k for k in models.ALL if models.installed(k)]
         if err is not None:
             self.models_lbl.configure(text="Couldn't check the models (Hugging Face not reachable).")
         elif not have:

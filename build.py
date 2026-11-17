@@ -64,7 +64,7 @@ def pyinstaller():
                            "--collect-binaries", "ctranslate2",
                            "--collect-submodules", "av", "--collect-all", "fpdf", "--collect-all", "uharfbuzz",
                            "--collect-submodules", "fontTools",
-                           "--collect-all", "sherpa_onnx",
+                           "--collect-all", "sherpa_onnx", "--collect-all", "langid", "--collect-all", "tokenizers",
                            *nvidia_binaries(),
                            "--distpath", str(DIST), "--workpath", str(ROOT / "build"),
                            "--specpath", str(ROOT / "build"), str(ROOT / "run.py")])

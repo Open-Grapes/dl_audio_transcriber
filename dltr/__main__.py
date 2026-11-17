@@ -118,8 +118,50 @@ def selftest_media(src, out):
     return 0 if "error" not in res else 1
 
 
+def selftest_ai(out, keys="nllb-1.3b,qwen3-4b"):
+    """--selftest-ai OUT.json: download the translation/AI models if needed, translate a few sentences with both
+    translators and write a short summary (used by the Mac build test)."""
+    import json
+    import time
+    from . import ai, engine, models
+    res = {}
+    try:
+        for k in keys.split(","):
+            if not models.installed(k):
+                t = time.time()
+                engine.download(k)
+                res[f"download_{k}"] = round(time.time() - t, 1)
+        t = time.time()
+        r = ai.translate(["Good morning everyone, the meeting starts at ten.", "我哋聽日去邊度食飯呀？"], None,
+                         "zho_Hans", "nllb")
+        res["nllb"] = r["texts"]
+        r = ai.translate(["我哋聽日去邊度食飯呀？"], None, "eng_Latn", "nllb")
+        res["nllb_to_en"] = r["texts"]
+        res["nllb_s"] = round(time.time() - t, 1)
+        t = time.time()
+        r = ai.translate(["Good morning everyone, the meeting starts at ten."], None, "jpn_Jpan", "ai")
+        res["ai"] = r["texts"]
+        res["ai_s"] = round(time.time() - t, 1)
+        t = time.time()
+        res["summary"] = ai.summarize(
+            "Anna: Sales were 15 percent above forecast this quarter, mostly from the new subscription plan.\n"
+            "Ben: Great. Then let's double the marketing budget before the launch in March.\n"
+            "Anna: Agreed, but keep some money for customer support. Ben will send the new budget by Friday.",
+            "eng_Latn", "short", times=False)
+        res["summary_s"] = round(time.time() - t, 1)
+        res["device"] = ai.device()
+    except Exception as e:
+        import traceback
+        res["error"] = f"{e}\n{traceback.format_exc()}"
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(res, fh, ensure_ascii=False, indent=1)
+    return 0 if "error" not in res else 1
+
+
 def main():
     args = sys.argv[1:]
+    if args[:1] == ["--selftest-ai"] and len(args) in (2, 3):
+        return selftest_ai(*args[1:])
     if args[:1] == ["--cli"]:
         return cli(args[1:])
     if args[:1] == ["--check-update"] and len(args) == 2:

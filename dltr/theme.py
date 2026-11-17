@@ -9,6 +9,9 @@ from tkinter import ttk
 IS_WIN, IS_MAC = os.name == "nt", sys.platform == "darwin"
 UI = "Segoe UI" if IS_WIN else "Helvetica Neue" if IS_MAC else "DejaVu Sans"
 MONO = "Consolas" if IS_WIN else "Menlo" if IS_MAC else "DejaVu Sans Mono"
+# Transcript text: Microsoft YaHei UI = Segoe UI's Latin letters + regular-weight Chinese/Japanese (with plain
+# Segoe UI, Windows falls back to a font that draws CJK text looking bold).
+TEXT = "Microsoft YaHei UI" if IS_WIN else UI
 _S = 0 if IS_WIN else 3   # macOS text needs to be a few points larger to look the same
 
 LIGHT = {
@@ -89,6 +92,13 @@ def apply(root, dark):
                                                 ("disabled", panel)],
                   foreground=[("disabled", p["faint"])])
         style.configure("TProgressbar", background=p["accent"], troughcolor=panel, bordercolor=line)
+        style.configure("TNotebook", background=bg, bordercolor=line, lightcolor=bg, darkcolor=bg,
+                        tabmargins=(4, 4, 4, 0))
+        style.configure("TNotebook.Tab", background=panel, foreground=p["muted"], bordercolor=line,
+                        lightcolor=panel, darkcolor=panel, padding=(14, 6), font=(UI, 10 + _S))
+        style.map("TNotebook.Tab", background=[("selected", bg), ("active", p["hover"])],
+                  foreground=[("selected", text)], lightcolor=[("selected", bg)],
+                  expand=[("selected", (0, 2, 0, 0))])
         style.configure("Drop.TLabel", background=panel, bordercolor=line)
     else:
         # ttk keeps settings per theme, so the dark colours above don't leak into the native look.

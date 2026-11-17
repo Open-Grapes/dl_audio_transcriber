@@ -79,7 +79,7 @@ class App(BaseTk):
     def __init__(self, files=()):
         super().__init__()
         self.title(APP_NAME)
-        self.geometry("1080x820")
+        self.geometry("1100x880")
         self.minsize(860, 640)
         set_icon(self)
         self.s = load_settings()
@@ -129,7 +129,7 @@ class App(BaseTk):
         self.v_model = tk.StringVar(value=self._label(s.get("model") if s.get("model") in MODELS else "large-v3-turbo"))
         lang = s.get("language")
         self.v_lang = tk.StringVar(value=f"{LANGUAGES[lang]} ({lang})" if lang in LANGUAGES else AUTO)
-        self.v_task = tk.StringVar(value=s.get("task", "transcribe"))
+        self.v_task = tk.StringVar(value="transcribe")      # translating moved to the Translate tab
         self.v_mixed = tk.BooleanVar(value=s.get("multilingual", False))
         self.v_hints = tk.StringVar(value=s.get("hints", ""))
         self.v_ts = tk.BooleanVar(value=s.get("timestamps", True))
@@ -144,7 +144,8 @@ class App(BaseTk):
         for v in (self.v_model, self.v_lang, self.v_task, self.v_mixed, self.v_hints, self.v_ts, self.v_spk, self.v_nspk,
                   *self.v_fmt.values()):
             v.trace_add("write", lambda *_: self._save())
-        self.v_ts.trace_add("write", lambda *_: self._render(keep_view=True))
+        self.v_ts.trace_add("write", lambda *_: (self._render(keep_view=True),
+                                                 hasattr(self, "trans_tab") and self.trans_tab.render()))
         self.v_showspk.trace_add("write", lambda *_: (self._save(), self._render(keep_view=True)))
 
     @staticmethod
@@ -214,7 +215,13 @@ class App(BaseTk):
         self.device_lbl.pack(side="right")
         self.warn_lbl = ttk.Label(self, style="Warn.TLabel", wraplength=900, justify="left")
 
-        self.drop = ttk.Label(self, style="Drop.TLabel", relief="groove", padding=12,
+        # three tabs: Transcribe (the original window), Translate, Summary
+        self.nb = ttk.Notebook(self)
+        self.nb.pack(fill="both", expand=True, padx=8, pady=(8, 0))
+        tab = ttk.Frame(self.nb)
+        self.nb.add(tab, text="   Transcribe   ")
+        self.tab_tr = tab
+        self.drop = ttk.Label(tab, style="Drop.TLabel", relief="groove", padding=12,
                               text="Drop audio or video files / folders here (or click to browse)\n"
                                    "mp3 · wav · m4a · mp4 · mov · mkv · webm · and more — no length limit")
         self.drop.pack(fill="x", padx=12, pady=10)
@@ -225,7 +232,7 @@ class App(BaseTk):
                 w.dnd_bind("<<Drop>>", self._on_drop)
 
         # options
-        opt = ttk.Frame(self, padding=(12, 0))
+        opt = ttk.Frame(tab, padding=(12, 0))
         opt.pack(fill="x")
         opt.columnconfigure(1, weight=1)
         opt.columnconfigure(3, weight=1)
@@ -247,11 +254,8 @@ class App(BaseTk):
 
         r2 = ttk.Frame(opt)
         r2.grid(row=1, column=0, columnspan=4, sticky="we", pady=(8, 0))
-        ttk.Radiobutton(r2, text="Transcribe", value="transcribe", variable=self.v_task).pack(side="left")
-        ttk.Radiobutton(r2, text="Translate to English", value="translate", variable=self.v_task).pack(
-            side="left", padx=(10, 0))
         ttk.Checkbutton(r2, text="Mixed languages (e.g. English + Mandarin in one recording)",
-                        variable=self.v_mixed).pack(side="left", padx=(18, 0))
+                        variable=self.v_mixed).pack(side="left")
         spk_ok = speakers.available()
         cb = ttk.Checkbutton(r2, text="Speakers (who said what)", variable=self.v_spk,
                              command=self._spk_ui)
@@ -285,7 +289,7 @@ class App(BaseTk):
         self.outdir_lbl.pack(side="right", padx=(12, 6))
 
         # status + buttons
-        bot = ttk.Frame(self, padding=(12, 8, 12, 12))
+        bot = ttk.Frame(tab, padding=(12, 8, 12, 12))
         bot.pack(side="bottom", fill="x")
         self.progress = ttk.Progressbar(bot, mode="determinate", maximum=1.0)
         self.progress.pack(fill="x")
@@ -301,7 +305,7 @@ class App(BaseTk):
         self.status.bind("<Configure>", lambda e: self.status.configure(wraplength=max(e.width - 4, 100)))
 
         # queue + transcript
-        pane = ttk.PanedWindow(self, orient="vertical")
+        pane = ttk.PanedWindow(tab, orient="vertical")
         pane.pack(fill="both", expand=True, padx=12, pady=(10, 0))
         tf = ttk.Frame(pane)
         cols = ("file", "length", "lang", "status", "time")
@@ -384,7 +388,7 @@ class App(BaseTk):
 
         body = ttk.Frame(pf)
         body.pack(fill="both", expand=True)
-        self.text = tk.Text(body, wrap="word", height=10, font=(UI, 11 + theme._S), relief="flat", padx=14, pady=10,
+        self.text = tk.Text(body, wrap="word", height=10, font=(theme.TEXT, 11 + theme._S), relief="flat", padx=14, pady=10,
                             borderwidth=1, highlightthickness=1, spacing1=1, spacing3=1, undo=True,
                             cursor="arrow")
         tsb = ttk.Scrollbar(body, orient="vertical", command=self.text.yview)
@@ -410,6 +414,15 @@ class App(BaseTk):
         self._player_ui()
         self.vol_lbl.configure(text=I_VOL[2])
         self.vol_pct.configure(text=f"{self.player.volume:.0%}")
+
+        # Translate + Summary tabs (dltr/tabs.py)
+        from .tabs import AiRunner, SummaryTab, TranslateTab
+        self.ai = AiRunner(self)
+        self.trans_tab = TranslateTab(self.nb, self)
+        self.nb.add(self.trans_tab, text="   Translate   ")
+        self.sum_tab = SummaryTab(self.nb, self, self.trans_tab)
+        self.nb.add(self.sum_tab, text="   Summary   ")
+        self.nb.bind("<<NotebookTabChanged>>", lambda e: self.sum_tab.refresh())
 
     def _spk_ui(self):
         on = self.v_spk.get() and speakers.available()
@@ -441,6 +454,9 @@ class App(BaseTk):
         self.text.tag_configure("find", background="#5c4a12" if self.dark else "#ffe08a")
         self.text.tag_configure("findcur", background="#d97706" if self.dark else "#ff9f43",
                                 foreground="#ffffff" if self.dark else "#000000")
+        if hasattr(self, "trans_tab"):
+            self.trans_tab.recolor(p, self.dark)
+            self.sum_tab.recolor(p, self.dark)
         self.text.tag_raise("find")
         self.text.tag_raise("findcur")
         self.text.tag_raise("sel")
@@ -745,12 +761,15 @@ class App(BaseTk):
         if kind == "call":
             a[0]()
             return
+        if kind == "ai":                       # translation / summary worker
+            self.ai.handle(*a)
+            return
         if kind == "device":
             self.has_gpu, self.device_name, problem = a
             self.device_lbl.configure(text=f"Running on: {self.device_name}" + ("" if self.has_gpu else " (slower)"))
             self.warn_lbl.configure(text=problem)
             if problem:
-                self.warn_lbl.pack(fill="x", padx=12, pady=(6, 0), before=self.drop)
+                self.warn_lbl.pack(fill="x", padx=12, pady=(6, 0), before=self.nb)
             else:
                 self.warn_lbl.pack_forget()
             if not self.has_gpu and "model" not in self.s:
@@ -1592,6 +1611,7 @@ class App(BaseTk):
                 self.time_lbl.configure(text=f"{fmt_hms(pos)} / {fmt_hms(self._length())}")
                 if playing:
                     self._highlight(pos)
+                    self.trans_tab.follow(pos)
                 want = I_PAUSE if playing else I_PLAY
                 if self.play_btn.cget("text") != want:
                     self.play_btn.configure(text=want)
@@ -1617,7 +1637,8 @@ class App(BaseTk):
             mw.wk.kill()
         uw = self.update_win
         if uw is not None and uw.mwk is not None:
-            uw.mwk.kill()              # a download in the Models window (resumes next time)
+            uw.mwk.kill()
+        self.ai.close()              # a download in the Models window (resumes next time)
         self.player.close()
         self.wk.close()
         self.destroy()
