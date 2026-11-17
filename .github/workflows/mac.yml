@@ -25,6 +25,8 @@ jobs:
 
       - name: Build, smoke-test and package
         run: python build_mac.py
+        env:
+          GH_TOKEN: ${{ github.token }}   # the update-check test would otherwise share the runner's anonymous rate limit
 
       - uses: actions/upload-artifact@v5
         with:

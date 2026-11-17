@@ -109,8 +109,12 @@ def latest():
     except urllib.error.HTTPError as e:
         if e.code not in (401, 403, 404) or TESTING:
             raise UpdateError(f"GitHub answered {e.code}. Try again later.") from None
+        limited = e.code in (403, 429) and (e.headers.get("X-RateLimit-Remaining") == "0" or e.code == 429)
         token = _token()
         if not token:
+            if limited:
+                raise UpdateError("GitHub is limiting update checks from this network right now (about 60 an "
+                                  "hour without a login). Try again in an hour.") from None
             raise UpdateError("No published version was found. The dl_transcribe project on GitHub is private "
                               "(or has no releases yet), so updates aren't available yet.") from None
         try:
