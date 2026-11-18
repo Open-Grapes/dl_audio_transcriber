@@ -31,6 +31,19 @@ button:disabled{opacity:.5;cursor:default}
 @media (max-width:520px){.row label{width:100%}.row label select{flex:1 1 0;width:0}}
 select,input[type=text]{font:inherit;border:1px solid var(--line);background:var(--field);color:var(--text);border-radius:8px;
 padding:7px 8px;min-height:38px;max-width:100%}
+.ss{position:relative;display:inline-block;min-width:0;max-width:100%}
+.ss-hide{display:none!important}
+.ss>input{width:16em;max-width:100%;padding-right:26px;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+background-position:calc(100% - 14px) 50%,calc(100% - 9px) 50%;background-size:5px 5px;background-repeat:no-repeat;text-overflow:ellipsis}
+.ss-list{position:absolute;z-index:30;left:0;min-width:100%;top:calc(100% + 2px);max-height:280px;overflow:auto;background:var(--card);
+border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.18);color:var(--text)}
+.ss-it{padding:7px 10px;cursor:pointer;white-space:nowrap}
+.ss-it.on{background:var(--accent2)} .ss-none{padding:7px 10px;color:var(--muted)}
+@media (max-width:520px){.row label .ss{flex:1 1 0;width:0}.ss>input{width:100%}}
+.find{display:flex;gap:6px;align-items:center;margin:0 0 10px;flex-wrap:wrap}
+.find input{flex:1 1 160px;width:auto}
+.find button{min-width:40px}
+::highlight(fnd){background:#ffd54a;color:#000} ::highlight(fndcur){background:#ff9f43;color:#000}
 label.cb{display:inline-flex;align-items:center;gap:6px;margin-right:14px;white-space:nowrap}
 .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 .muted{color:var(--muted)} .small{font-size:13px}
@@ -66,6 +79,10 @@ audio{width:100%;margin:6px 0}
 .dl{display:flex;flex-wrap:wrap;gap:6px}
 .dl a{font-size:13px;padding:6px 10px;min-height:32px}
 .hidden{display:none!important}
+#gone{position:fixed;inset:0;z-index:99;background:var(--bg);display:grid;place-items:center;padding:16px;text-align:center}
+#gone .ic{font-size:44px;line-height:1}
+#gone h2{margin:10px 0 6px}
+#gone p{color:var(--muted);max-width:420px;margin:0 auto 6px}
 .back{margin-bottom:6px}
 .htabs{display:flex;gap:6px;margin:0 0 14px;overflow-x:auto}
 .htabs button{border-radius:20px;padding:6px 16px;min-height:36px}
@@ -75,6 +92,8 @@ border-radius:8px;padding:8px;resize:vertical;margin-top:10px}
 </style>
 </head>
 <body>
+<div id="gone" class="hidden" role="alertdialog" aria-live="assertive"><div><div class="ic" id="gone-ic"></div><h2 id="gone-h"></h2>
+<p id="gone-p"></p><p class="small" id="gone-s"></p></div></div>
 <header><img src="/icon.png" alt=""><div class="t">dl_transcribe</div><div class="s" id="pc">connecting…</div></header>
 <main>
   <div class="htabs" id="htabs"><button data-h="tx" class="on">Transcribe</button><button data-h="tr">Translate</button><button data-h="sm">Summary</button></div>
@@ -131,6 +150,8 @@ border-radius:8px;padding:8px;resize:vertical;margin-top:10px}
       <audio id="player" controls preload="metadata"></audio>
       <div id="d-work"><div class="small muted" id="d-stage"></div><div class="bar"><i id="d-bar"></i></div></div>
       <div class="tabs"><button data-t="t" class="on" id="tab-t-btn">Transcript</button><button data-t="tr">Translate</button><button data-t="sm">Summary</button></div>
+      <div class="find"><input type="text" id="find" placeholder="Find in this text" autocomplete="off" enterkeyhint="search">
+        <button id="find-prev" title="Previous">‹</button><button id="find-next" title="Next">›</button><span class="small muted" id="find-n"></span></div>
 
       <div id="tab-t">
         <div class="row small" style="margin-bottom:6px">
@@ -180,12 +201,127 @@ const store = { get(k, d) { try { const v = localStorage.getItem("dltr." + k); r
                 set(k, v) { try { localStorage.setItem("dltr." + k, JSON.stringify(v)); } catch {} } };
 let INFO = null, CUR = null, DET = null, NOW = -1, renderedFor = "", trRendered = "", lastSum = "";
 
+// ---------------------------------------------------------------- the PC ended sharing, or blocked this device
+let GONE = null, misses = 0, goneTimer = 0;
+function gone(kind) {
+  if (GONE === "blocked" && kind !== "blocked") return;
+  GONE = kind;
+  const T = {
+    off: ["⏻", "Wi-Fi sharing has ended", "The PC stopped sharing, so this page no longer works.",
+          "If they turn it back on, this page reconnects by itself."],
+    lost: ["📶", "Can't reach the PC", "Wi-Fi sharing was turned off on the PC, or this device left the Wi-Fi.",
+           "Trying again …"],
+    blocked: ["⛔", "Access ended", "The owner of this PC has ended your access to dl_transcribe.", ""]}[kind];
+  [$("#gone-ic").textContent, $("#gone-h").textContent, $("#gone-p").textContent, $("#gone-s").textContent] = T;
+  $("#gone").classList.remove("hidden");
+  try { $("#player").pause(); } catch {}
+  clearTimeout(pollTimer); clearTimeout(goneTimer);
+  if (kind !== "blocked") goneTimer = setTimeout(retry, 5000);
+}
+async function retry() {          // back on (or back on the Wi-Fi): start fresh
+  try { const r = await fetch("/api/info", {cache: "no-store"}); if (r.ok) return location.reload(); const j = await r.json().catch(() => ({}));
+        if (j.blocked) return gone("blocked"); if (j.ended) gone("off"); } catch {}
+  goneTimer = setTimeout(retry, 5000);
+}
 async function api(path, body) {
-  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  if (GONE) throw new Error($("#gone-h").textContent);
+  let r;
+  try { r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}); }
+  catch (e) { if (++misses >= 2) gone("lost"); throw e; }
+  misses = 0;
   const j = await r.json().catch(() => ({error: r.statusText}));
+  if (j.blocked) gone("blocked"); else if (j.ended) gone("off");
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 }
+
+// ---------------------------------------------------------------- searchable language lists: type "chin" to narrow them
+function searchSelect(sel) {
+  const wrap = document.createElement("span"); wrap.className = "ss";
+  const inp = document.createElement("input"); inp.type = "text"; inp.autocomplete = "off"; inp.spellcheck = false;
+  inp.setAttribute("enterkeyhint", "done"); inp.setAttribute("aria-label", "Type to search");
+  const list = document.createElement("div"); list.className = "ss-list hidden";
+  sel.parentNode.insertBefore(wrap, sel); wrap.append(inp, list, sel); sel.classList.add("ss-hide");
+  const D = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value");
+  const label = () => { const o = sel.options[sel.selectedIndex]; return o ? o.text : ""; };
+  const sync = () => { if (document.activeElement !== inp) inp.value = label(); };
+  Object.defineProperty(sel, "value", {get() { return D.get.call(sel); }, set(v) { D.set.call(sel, v); sync(); }, configurable: true});
+  new MutationObserver(sync).observe(sel, {childList: true});
+  sel.addEventListener("change", sync);
+  let items = [], act = 0;
+  const draw = () => {
+    list.innerHTML = items.length ? items.map((o, i) => `<div class="ss-it${i === act ? " on" : ""}" data-i="${i}">${esc(o.text)}</div>`).join("")
+                                  : `<div class="ss-none">No match</div>`;
+    list.classList.remove("hidden");
+    const on = list.querySelector(".on"); if (on) on.scrollIntoView({block: "nearest"});
+  };
+  const filter = q => {
+    q = q.trim().toLowerCase();
+    const all = [...sel.options].filter(o => !o.disabled);
+    if (!q) { items = all; act = Math.max(0, all.indexOf(sel.options[sel.selectedIndex])); }
+    else {
+      const t = o => o.text.toLowerCase();
+      const a = all.filter(o => t(o).startsWith(q));
+      const b = all.filter(o => !a.includes(o) && t(o).split(/[\s(]+/).some(w => w.startsWith(q)));
+      const c = all.filter(o => !a.includes(o) && !b.includes(o) && (t(o).includes(q) || o.value.toLowerCase().startsWith(q)));
+      items = [...a, ...b, ...c]; act = 0;
+    }
+    draw();
+  };
+  const close = () => { list.classList.add("hidden"); sync(); };
+  const pick = o => { if (!o) return; D.set.call(sel, o.value); inp.value = o.text; list.classList.add("hidden");
+                      sel.dispatchEvent(new Event("change", {bubbles: true})); inp.blur(); };
+  let fresh = false;     // the click that focuses the box shouldn't undo "select all" (typing then replaces it)
+  inp.addEventListener("focus", () => { filter(""); inp.select(); fresh = true; });
+  inp.addEventListener("mouseup", e => { if (fresh) { e.preventDefault(); fresh = false; } });
+  inp.addEventListener("keydown", () => { fresh = false; });
+  inp.addEventListener("input", () => filter(inp.value));
+  inp.addEventListener("keydown", e => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { if (list.classList.contains("hidden")) filter(""); else { act = Math.max(0, Math.min(items.length - 1, act + (e.key === "ArrowDown" ? 1 : -1))); draw(); } e.preventDefault(); }
+    else if (e.key === "Enter") { pick(items[act]); e.preventDefault(); }
+    else if (e.key === "Escape") { inp.blur(); }
+  });
+  inp.addEventListener("blur", () => setTimeout(close, 150));
+  list.addEventListener("mousedown", e => { const it = e.target.closest(".ss-it"); e.preventDefault(); if (it) pick(items[+it.dataset.i]); });
+  sync();
+}
+for (const s of ["#lang", "#tgt", "#slang", "#h-tgt", "#h-slang"]) searchSelect($(s));
+
+// ---------------------------------------------------------------- Find in the open recording's text
+const FIND = {hits: [], i: -1};
+function findBox() { return ["#tx", "#trx", "#sumx"].map($).find(b => !b.closest(".hidden")); }
+function findRun(scroll) {
+  const q = $("#find").value.trim().toLowerCase(), box = findBox();
+  FIND.hits = []; FIND.i = -1;
+  if (q && box) {
+    const w = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+    for (let n; (n = w.nextNode());) {
+      const t = n.data.toLowerCase();
+      for (let k = t.indexOf(q); k >= 0; k = t.indexOf(q, k + q.length)) {
+        const r = new Range(); r.setStart(n, k); r.setEnd(n, k + q.length); FIND.hits.push(r);
+      }
+    }
+  }
+  if (FIND.hits.length) FIND.i = 0;
+  findShow(scroll);
+}
+function findShow(scroll) {
+  const n = FIND.hits.length, q = $("#find").value.trim();
+  $("#find-n").textContent = !q ? "" : n ? `${FIND.i + 1} of ${n}` : "No matches";
+  if (window.CSS && CSS.highlights) {
+    CSS.highlights.set("fnd", new Highlight(...FIND.hits));
+    CSS.highlights.set("fndcur", n ? new Highlight(FIND.hits[FIND.i]) : new Highlight());
+  }
+  if (scroll && n) { const el = FIND.hits[FIND.i].startContainer.parentElement; el && el.scrollIntoView({block: "center", behavior: "smooth"}); }
+}
+function findStep(d) { if (!FIND.hits.length) return findRun(true); FIND.i = (FIND.i + d + FIND.hits.length) % FIND.hits.length; findShow(true); }
+$("#find").addEventListener("input", () => findRun(true));
+$("#find").addEventListener("keydown", e => { if (e.key === "Enter") { findStep(e.shiftKey ? -1 : 1); e.preventDefault(); } });
+$("#find-next").onclick = () => findStep(1);
+$("#find-prev").onclick = () => findStep(-1);
+let findT = 0;
+const findLater = () => { clearTimeout(findT); findT = setTimeout(() => { if ($("#find").value.trim()) { const i = FIND.i; findRun(false); if (i >= 0 && i < FIND.hits.length) { FIND.i = i; findShow(false); } } }, 120); };
+for (const s of ["#tx", "#trx", "#sumx"]) new MutationObserver(findLater).observe($(s), {childList: true, subtree: true, characterData: true});
 
 async function init() {
   try { INFO = await api("/api/info"); } catch (e) { $("#pc").textContent = "Can't reach the PC: " + e.message; return; }
@@ -268,10 +404,11 @@ function upload(f) {
   x.upload.onprogress = e => { if (e.lengthComputable) row.querySelector("i").style.width = (100 * e.loaded / e.total) + "%"; };
   x.onload = () => {
     let j = {}; try { j = JSON.parse(x.responseText); } catch {}
+    if (j.blocked) gone("blocked"); else if (j.ended) gone("off");
     if (x.status !== 200) { row.innerHTML = `<span class="err">${esc(f.name)}: ${esc(j.error || x.statusText)}</span>`; return; }
     row.remove(); poll();
   };
-  x.onerror = () => { row.innerHTML = `<span class="err">${esc(f.name)}: the upload failed (is the PC still sharing?)</span>`; };
+  x.onerror = () => { row.innerHTML = `<span class="err">${esc(f.name)}: the upload failed (is the PC still sharing?)</span>`; poll(); };
   x.send(f);
 }
 
@@ -280,7 +417,7 @@ const BUSY = new Set(["queued", "working", "downloading"]);
 let pollTimer = null;
 async function poll() {
   clearTimeout(pollTimer);
-  let d; try { d = await api("/api/jobs"); } catch (e) { $("#pc").textContent = "Lost the connection to the PC — retrying …"; pollTimer = setTimeout(poll, 3000); return; }
+  let d; try { d = await api("/api/jobs"); } catch (e) { if (GONE) return; $("#pc").textContent = "Lost the connection to the PC — retrying …"; pollTimer = setTimeout(poll, 3000); return; }
   if (INFO) $("#pc").innerHTML = `${esc(INFO.pc)}<br><span class="small">${esc(d.device)}</span>`;
   const box = $("#jobs");
   if (!d.jobs.length) { box.innerHTML = `<p class="muted small">Nothing yet. Add a recording above.</p>`; }
@@ -335,6 +472,7 @@ async function start(id) {
 function showTab(t) {
   for (const x of document.querySelectorAll(".tabs button")) x.classList.toggle("on", x.dataset.t === t);
   for (const k of ["t", "tr", "sm"]) $("#tab-" + k).classList.toggle("hidden", k !== t);
+  findRun(false);
 }
 function open(id, tab) {
   showTab(tab || "t");

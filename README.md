@@ -10,7 +10,7 @@ No length limit, no upload, no account. Uses Whisper (via [faster-whisper](https
 - Exports **PDF** and **TXT** (readable paragraphs, optional `(0:03)` timestamps), **SRT** / **VTT** subtitles (re-cut from word timings into ≤2-line cues), **JSON** (segments + word timings + confidence), **CSV**.
 - Built-in **player**: play / pause, seek bar, volume. **Click any sentence** to play from there; the sentence being spoken is highlighted.
 - **Edit transcript** in place before exporting, and **Save audio as MP3** from any audio or video file.
-- **Find** (Ctrl+F, F3 for next) highlights every match in the transcript. **Show speakers** hides or shows the speaker names (on screen and in exports).
+- **Find** (Ctrl+F, F3 for next) highlights every match in the transcript — also on the Translate tab (both boxes) and the Summary tab. Every language list is searchable: type a few letters ("chin") in the box, or while the list is open, and pick with a click or Enter. **Show speakers** hides or shows the speaker names (on screen and in exports).
 - **Check for updates** (top right) compares this version with the latest release on GitHub and, with **Update all**, downloads it, swaps the files when the app closes and restarts it. It also updates downloaded models. Settings and models are kept.
 - **Speakers** (optional): tick *Speakers (who said what)* to label each turn *Speaker 1*, *Speaker 2* … (Auto finds how many, or pick the number). Click a speaker name to rename it everywhere or to move a wrongly labelled part to another speaker. Runs offline with sherpa-onnx (pyannote segmentation 3.0, MIT + 3D-Speaker ERes2Net, Apache-2.0; ~45 MB, included).
 - **99 languages**, auto-detected — including English, Mandarin, Cantonese, Malay, Tamil, Indonesian, Thai, Vietnamese, Tagalog, Japanese, Korean, Hindi.
@@ -75,7 +75,13 @@ Click **Share via Wi-Fi** (top right). A window shows a QR code and two addresse
 - use the **Translate** and **Summary** tabs at the top of the page for a finished recording or for **pasted text** (no recording needed);
 - **download** PDF / TXT / SRT / VTT / JSON / CSV of the transcript or the translation, and PDF / TXT / MD of the summary.
 
-This PC does all the work (with its GPU), so it must stay on with the app open; nothing goes to the internet. Sharing stays on until you click **Turn off** or close the app, and uploads are deleted then. There's no password, so anyone on the same Wi-Fi who knows the address can use it while sharing is on.
+This PC does all the work (with its GPU), so it must stay on with the app open; nothing goes to the internet. Sharing stays on until you click **Turn off** or close the app. There's no password, so anyone on the same Wi-Fi who knows the address can use it while sharing is on.
+
+**What people upload stays on this PC** (so you can see what was used) until you delete it. A yellow reminder in the main window and the Wi-Fi window shows how many uploads are stored, with **Open folder** and **Delete all…**. Each upload or pasted text gets its own folder named by date, time and the sender's IP address, in `%LOCALAPPDATA%\dl_transcribe\wifi` (Mac: `~/Library/Application Support/dl_transcribe/wifi`).
+
+**Admin…** (in the Wi-Fi window) shows the stored uploads and an **activity log**: date, time, IP address, device name and MAC address (when the network reveals them), device and browser (e.g. *Android (SM-S918B) · Chrome*), and what they did (opened the page, uploaded, pasted text, transcribed, translated, summarised, downloaded). Filter it, copy rows, open it in Excel (`wifi_activity.csv`) or clear it. Everyone is on your own Wi-Fi, so there's no map location for local addresses.
+
+**Turning sharing off** closes every open page within a few seconds: it shows *Wi-Fi sharing has ended* and reconnects by itself if you turn sharing back on. **Block device…** (select one of its rows in the activity log) ends that device's access straight away: its page shows *Access ended*, its waiting work is cancelled, and it stays blocked (by IP address) until you unblock it.
 
 **Phone can't connect?** The first time, Windows asks whether to allow dl_transcribe on networks: allow it on *Private networks*. Your Wi-Fi must also be set to *Private* in Windows Settings → Network & internet. Some networks (offices, hotels) block devices from seeing each other, and some block `.local` names; then use the number address.
 

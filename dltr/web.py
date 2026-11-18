@@ -21,10 +21,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from . import engine, langs, media, models
-from .common import APP_NAME, APP_VERSION, FORMATS, LANGUAGES, MODELS, SUP, asset, lang_name, log
+from .common import APP_NAME, APP_VERSION, FORMATS, LANGUAGES, MODELS, asset, fmt_hms, lang_name, log
 from .worker import Worker
+from .wifi_store import WORK, human, is_blocked, log_event, new_folder
 
-WORK = SUP / "wifi"
 PORTS = (80, 8776, 0)            # port 80 gives short addresses like http://192.168.0.20
 MDNS_HOST = "dl-transcribe"      # http://dl-transcribe.local
 MAX_UPLOAD = 8 * 1024 ** 3
@@ -235,8 +235,28 @@ class Server(ThreadingHTTPServer):
     def __init__(self, port, hosts, jobs):
         super().__init__(("0.0.0.0", port), Handler)
         self.hosts, self.jobs = hosts, jobs
+        self.closed = False                 # sharing turned off: answer "ended", then hang up
+        self.conns = set()                  # open browser connections (kept alive between requests)
+        self.conns_lock = threading.Lock()
+
+    def hang_up(self):
+        """Turn off: cut every open browser connection, so pages notice right away (not on their next refresh)."""
+        self.closed = True
+        with self.conns_lock:
+            conns = list(self.conns)
+        for c in conns:
+            try:
+                c.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    # On Windows SO_REUSEADDR lets a second copy of the app grab the same port, and phones then reach
+    # either one at random. Claim the port exclusively there instead.
+    allow_reuse_address = os.name != "nt"
 
     def server_bind(self):
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         # Skip HTTPServer's machine-name lookup (socket.getfqdn), which can hang on some networks.
         socketserver.TCPServer.server_bind(self)
         self.server_name, self.server_port = self.server_address[:2]
@@ -249,12 +269,53 @@ def _page():
     raise FileNotFoundError("web_page.html")
 
 
+_SEEN = {}
+LINGER = 8          # seconds an address keeps saying "sharing has ended" after Turn off (pages poll every ≤4 s)
+BLOCKED_MSG = "The owner of this PC has ended your access to dl_transcribe."
+BLOCKED_PAGE = ("<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+                "<title>dl_transcribe</title><body style='font:17px system-ui,sans-serif;display:grid;place-items:center;"
+                "min-height:90vh;margin:0;padding:16px;text-align:center;background:#f4f5f7;color:#222'>"
+                "<div><div style='font-size:42px'>&#9940;</div><h2>Access ended</h2><p>" + BLOCKED_MSG + "</p></div>")
+
+
 class Handler(BaseHTTPRequestHandler):
     server: Server
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *a):
         pass
+
+    def setup(self):
+        super().setup()
+        with self.server.conns_lock:
+            self.server.conns.add(self.connection)
+
+    def finish(self):
+        with self.server.conns_lock:
+            self.server.conns.discard(self.connection)
+        try:
+            super().finish()
+        except OSError:
+            pass
+
+    def _gate(self, path):
+        """Sharing turned off, or this device blocked: say so (the page shows a full-screen notice) and stop."""
+        ip = self.client_address[0]
+        if self.server.closed:
+            self.close_connection = True
+            self._send(503, {"error": "Wi-Fi sharing was turned off on the PC.", "ended": True}, headers={"Connection": "close"})
+            return True
+        if is_blocked(ip):
+            self.close_connection = True
+            if time.time() - _SEEN.get("blocked " + ip, 0) > 600:
+                self._log("Tried to connect (blocked)")
+                _SEEN["blocked " + ip] = time.time()
+            if path.startswith("/api/"):
+                self._send(403, {"error": BLOCKED_MSG, "blocked": True}, headers={"Connection": "close"})
+            else:
+                self._send(403, BLOCKED_PAGE, "text/html; charset=utf-8", {"Connection": "close"})
+            return True
+        return False
 
     def _send(self, code, body=b"", ctype="application/json", headers=None):
         if isinstance(body, (dict, list)):
@@ -271,6 +332,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
+
+    def _log(self, action, details=""):
+        log_event(self.client_address[0], self.headers.get("User-Agent", ""), action, details)
 
     def _query(self):
         return {k: v[0] for k, v in urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).items()}
@@ -301,8 +365,14 @@ class Handler(BaseHTTPRequestHandler):
                               {"Cache-Control": "max-age=86400"})
         if not self._allowed():
             return self._send(403, "Open the address shown in dl_transcribe's Share via Wi-Fi window.", "text/plain")
+        if self._gate(path):
+            return
         try:
             if path in ("/", "/index.html"):
+                ip = self.client_address[0]
+                if time.time() - _SEEN.get(ip, 0) > 600:          # once per 10 minutes per device
+                    self._log("Opened the page")
+                _SEEN[ip] = time.time()
                 return self._send(200, _page(), "text/html; charset=utf-8",
                                   {"Content-Security-Policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; "
                                                               "script-src 'self' 'unsafe-inline'; img-src 'self' data:; "
@@ -426,6 +496,9 @@ class Handler(BaseHTTPRequestHandler):
         q = self._query()
         fmt = q.get("fmt", "txt")
         which = q.get("which", "transcript")
+        jj = self.server.jobs.items.get(jid or "")
+        if jj:
+            self._log("Download", f"{jj['name']} · {which} · {fmt.upper()}")
         if which == "summary":
             return self._export_summary(jid, fmt)
         if fmt not in engine.WRITERS:
@@ -480,6 +553,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.urlsplit(self.path).path
         if not self._allowed():
             return self._send(403, {"error": "forbidden"})
+        if self._gate(path):
+            return
         routes = {"/api/upload": self._upload, "/api/text": self._text, "/api/start": self._start,
                   "/api/translate": self._translate,
                   "/api/summarize": self._summarize, "/api/remove": self._remove}
@@ -500,8 +575,7 @@ class Handler(BaseHTTPRequestHandler):
         if length <= 0 or length > MAX_UPLOAD:
             raise BadRequest("The file is empty or too large (8 GB at most).")
         jid = secrets.token_hex(6)
-        d = WORK / jid
-        d.mkdir(parents=True, exist_ok=True)
+        d = new_folder(jid, self.client_address[0], name)
         src = d / name
         left = length
         with open(src, "wb") as fh:
@@ -520,7 +594,9 @@ class Handler(BaseHTTPRequestHandler):
             raise BadRequest(f"{name} doesn't seem to be audio or video.")
         jobs = self.server.jobs
         j = {"id": jid, "name": name, "path": str(src), "size": length, "duration": dur, "added": time.time(),
-             "state": "uploaded", "stage": "Uploaded — press Start", "progress": 0.0, "media": None}
+             "state": "uploaded", "stage": "Uploaded — press Start", "progress": 0.0, "media": None, "dir": str(d),
+             "ip": self.client_address[0]}
+        self._log("Uploaded", f"{name} · {human(length)} · {fmt_hms(dur)}")
         with jobs.lock:
             jobs.items[jid] = j
             jobs.order.append(jid)
@@ -545,11 +621,15 @@ class Handler(BaseHTTPRequestHandler):
             raise BadRequest("The text is empty.")
         name = (re.sub(r"\s+", " ", text)[:40].strip() + ("…" if len(text) > 40 else "")) or "Pasted text"
         jid = secrets.token_hex(6)
+        d = new_folder(jid, self.client_address[0], "pasted text")
+        (d / "pasted text.txt").write_text(text, encoding="utf-8")
+        self._log("Pasted text", f"{len(text):,} characters · “{name}”")
         res = {"file": "Pasted text", "task": "transcribe", "segments": segs, "no_times": True, "duration": 0,
                "speakers": [], "spoken_language": None, "language": None, "model": ""}
         j = {"id": jid, "name": name, "path": None, "size": len(text.encode()), "duration": 0, "added": time.time(),
              "state": "done", "stage": f"Pasted text · {len(segs)} sentences", "progress": 1.0, "media": None,
-             "result": res, "text": True, "hint": None}
+             "result": res, "text": True, "hint": None, "dir": str(d),
+             "ip": self.client_address[0]}
         jobs = self.server.jobs
         with jobs.lock:
             jobs.items[jid] = j
@@ -573,6 +653,7 @@ class Handler(BaseHTTPRequestHandler):
             j.update(state="queued", stage="Waiting for its turn …", progress=0.0, result=None, tr=None, sum=None,
                      tl_result=None)
         jobs.add_step(j["id"], {"kind": "transcribe", "opts": opts})
+        self._log("Transcribe", f"{j['name']} · {model} · {LANGUAGES.get(lang, 'auto-detect') if lang else 'auto-detect'}")
         return {"ok": True}
 
     def _translate(self):
@@ -588,6 +669,7 @@ class Handler(BaseHTTPRequestHandler):
                        "engine": eng, "texts": None}
             j["tl_result"] = None
         jobs.add_step(j["id"], {"kind": "translate", "tgt": tgt, "engine": eng})
+        self._log("Translate", f"{j['name']} → {langs.name(tgt)} · {eng}")
         return {"ok": True}
 
     def _summarize(self):
@@ -601,6 +683,7 @@ class Handler(BaseHTTPRequestHandler):
         with jobs.lock:
             j["sum"] = {"state": "queued", "stage": "Waiting for its turn …", "progress": 0.0, "text": ""}
         jobs.add_step(j["id"], {"kind": "summarize", "lang": lang, "detail": detail, "which": req.get("which")})
+        self._log("Summarise", f"{j['name']} · in {langs.name(lang)} · {detail}")
         return {"ok": True}
 
     def _remove(self):
@@ -611,10 +694,11 @@ class Handler(BaseHTTPRequestHandler):
             if jobs.current and jobs.current[0] == jid:
                 raise BadRequest("It's being worked on right now; wait for it to finish.")
             jobs.queue = [q for q in jobs.queue if q[0] != jid]
-            jobs.items.pop(jid, None)
+            j = jobs.items.pop(jid, None)
             if jid in jobs.order:
                 jobs.order.remove(jid)
-        shutil.rmtree(WORK / str(jid), ignore_errors=True)
+        if j:      # the file stays in the Wi-Fi uploads folder until you delete it (Admin)
+            self._log("Removed from their list", j["name"])
         return {"ok": True}
 
 
@@ -633,11 +717,12 @@ class Sharing:
     @classmethod
     def start(cls, settings, on_change=None):
         self = cls()
+        if cls._ending is not None:         # turned straight back on: wait for the old one to let go of the port
+            cls._ending.join(LINGER + 2)
         ip = lan_ip()
         if not ip:
             raise RuntimeError("This PC isn't connected to a network.")
-        shutil.rmtree(WORK, ignore_errors=True)
-        WORK.mkdir(parents=True, exist_ok=True)
+        WORK.mkdir(parents=True, exist_ok=True)       # earlier uploads are kept until you delete them
         hosts = {ip, f"{MDNS_HOST}.local", f"{socket.gethostname().lower()}.local", "127.0.0.1", "localhost"}
         self.jobs = Jobs(settings)
         for port in PORTS:
@@ -667,22 +752,62 @@ class Sharing:
         threading.Thread(target=announce, daemon=True).start()
         return self
 
-    def stop(self):
+    _ending = None          # the last server, still telling open pages "sharing has ended" for a few seconds
+
+    def stop(self, linger=LINGER):
+        """Turn off. For a few seconds the address keeps answering "sharing has ended" (pages show that and close
+        instead of looking alive) — then the port is released."""
         self._stopped = True
-        try:
-            if self.srv:
-                self.srv.shutdown()
-                self.srv.server_close()
-        except Exception:
-            pass
+        if self.srv:
+            self.srv.closed = True          # from now on every request is answered "sharing has ended"
+        if self.jobs:
+            self.jobs.close()
         for c in self._closers:
             try:
                 c()
             except Exception:
                 pass
-        if self.jobs:
-            self.jobs.close()
-        shutil.rmtree(WORK, ignore_errors=True)
+        srv = self.srv
+        if not srv:
+            return
+
+        def end():
+            srv.hang_up()                   # cut kept-alive connections: the next request gets "ended"
+            time.sleep(linger)
+            try:
+                srv.shutdown()
+                srv.server_close()
+            except Exception:
+                pass
+        t = threading.Thread(target=end, daemon=True)
+        t.start()
+        Sharing._ending = t
+
+    def purge(self):
+        """Before "Delete all": forget every job that isn't being worked on; returns the folders to keep."""
+        if not self.jobs:
+            return set()
+        with self.jobs.lock:
+            busy = {q[0] for q in self.jobs.queue} | ({self.jobs.current[0]} if self.jobs.current else set())
+            for jid in list(self.jobs.items):
+                if jid not in busy:
+                    self.jobs.items.pop(jid, None)
+                    if jid in self.jobs.order:
+                        self.jobs.order.remove(jid)
+            return {self.jobs.items[j].get("dir") for j in busy if j in self.jobs.items}
+
+    def kick(self, ip):
+        """Blocked: drop that device's recordings from the list and the queue (one already running finishes)."""
+        if not self.jobs:
+            return
+        with self.jobs.lock:
+            cur = self.jobs.current[0] if self.jobs.current else None
+            mine = {jid for jid, j in self.jobs.items.items() if j.get("ip") == ip}
+            self.jobs.queue[:] = [q for q in self.jobs.queue if q[0] not in mine]
+            for jid in mine - {cur}:
+                self.jobs.items.pop(jid, None)
+                if jid in self.jobs.order:
+                    self.jobs.order.remove(jid)
 
     def counts(self):
         if not self.jobs:

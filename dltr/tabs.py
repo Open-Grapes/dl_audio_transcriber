@@ -11,6 +11,7 @@ from tkinter import filedialog, messagebox, ttk
 from . import engine, langs, models, theme
 from .common import APP_NAME, FORMATS, fmt_hms, lang_name, log, open_path
 from .theme import UI
+from .widgets import FindBar, searchable
 from .worker import Worker
 
 AUTO = "Auto-detect"
@@ -44,26 +45,6 @@ def _format_row(parent, app, key, choices, default, export_cmd):
     lbl.pack(side="right", padx=6)
     return row, lambda: [f for f, v in vars_.items() if v.get()]
 NBSP = " "
-
-
-def _searchable(box, choices):
-    """Type in a language list to narrow it down; an unknown entry snaps back to the closest match."""
-    def filt(e):
-        if e.keysym in ("Up", "Down", "Return", "Escape", "Tab"):
-            return
-        q = box.get().strip().lower()
-        box.configure(values=[c for c in choices if q in c.lower()] if q else choices)
-
-    def fix(_e=None):
-        if box.get() not in choices:
-            q = box.get().strip().lower()
-            m = [c for c in choices if q and q in c.lower()]
-            box.set(m[0] if m else choices[0])
-        box.configure(values=choices)
-        box.selection_clear()
-    box.bind("<KeyRelease>", filt)
-    box.bind("<FocusOut>", fix)
-    box.bind("<<ComboboxSelected>>", fix)
 
 
 def _short_code(code):
@@ -135,6 +116,7 @@ class _Pane(ttk.Frame):
         self.title = ttk.Label(hdr, text=title, style="Muted.TLabel")
         self.title.pack(side="left")
         self.hdr = hdr
+        self.on_change = None
         body = ttk.Frame(self)
         body.pack(fill="both", expand=True)
         self.text = tk.Text(body, wrap="word", height=6, font=(theme.TEXT, 11 + theme._S), relief="flat", padx=14,
@@ -179,6 +161,8 @@ class _Pane(ttk.Frame):
                 t.insert("end", txt if txt else "…", (tag,) + (() if txt else ("hint",)))
                 idx += 1
         t.configure(state="disabled")
+        if self.on_change:
+            self.on_change()
 
     def message(self, msg):
         t = self.text
@@ -231,11 +215,11 @@ class TranslateTab(ttk.Frame):
         ttk.Label(r1, text="From").pack(side="left", padx=(0, 6))
         self.src_box = ttk.Combobox(r1, textvariable=self.v_src, values=SRC_CHOICES, width=30)
         self.src_box.pack(side="left")
-        _searchable(self.src_box, SRC_CHOICES)
+        searchable(self.src_box, SRC_CHOICES, AUTO)
         ttk.Label(r1, text="→  To").pack(side="left", padx=(12, 6))
         self.tgt_box = ttk.Combobox(r1, textvariable=self.v_tgt, values=TGT_CHOICES, width=30)
         self.tgt_box.pack(side="left")
-        _searchable(self.tgt_box, TGT_CHOICES)
+        searchable(self.tgt_box, TGT_CHOICES, langs.choice("eng_Latn"))
         ttk.Label(r1, text="Translator").pack(side="left", padx=(16, 6))
         eng = ttk.Combobox(r1, textvariable=self.v_eng, values=list(ENGINES.values()), state="readonly", width=32)
         eng.pack(side="left")
@@ -261,6 +245,11 @@ class TranslateTab(ttk.Frame):
         pane.add(self.bot, weight=1)
         ttk.Button(self.top.hdr, text="Copy", command=lambda: self.copy(False)).pack(side="right")
         ttk.Button(self.bot.hdr, text="Copy", command=lambda: self.copy(True)).pack(side="right")
+        self.find = FindBar(self, [self.top.text, self.bot.text])
+        self.find.place_fn = lambda: self.find.pack(fill="x", pady=(8, 0), before=pane)
+        ttk.Button(self.top.hdr, text="Find", command=self.find.open, width=6).pack(side="right", padx=(0, 6))
+        for p in (self.top, self.bot):
+            p.on_change = self.find.refresh
         ttk.Checkbutton(self.bot.hdr, text="Show timestamps", variable=app.v_ts).pack(side="right", padx=10)
         for p in (self.top, self.bot):
             p.text.bind("<ButtonRelease-1>", self._click)
@@ -291,6 +280,7 @@ class TranslateTab(ttk.Frame):
     def recolor(self, p, dark):
         self.top.recolor(p, dark)
         self.bot.recolor(p, dark)
+        self.find.recolor(dark)
 
     def _empty(self):
         self.top.message("Press  Import from Transcribe  to bring in the transcript you're looking at on the "
@@ -665,7 +655,7 @@ class SummaryTab(ttk.Frame):
         ttk.Label(r1, text="Write in").pack(side="left", padx=(20, 6))
         lb = ttk.Combobox(r1, textvariable=self.v_lang, values=TGT_CHOICES, width=26)
         lb.pack(side="left")
-        _searchable(lb, TGT_CHOICES)
+        searchable(lb, TGT_CHOICES, langs.choice("eng_Latn"))
         ttk.Label(r1, text="Length").pack(side="left", padx=(16, 6))
         db = ttk.Combobox(r1, textvariable=self.v_detail, values=list(DETAIL.values()), state="readonly", width=10)
         db.pack(side="left")
@@ -685,6 +675,9 @@ class SummaryTab(ttk.Frame):
         self.out = _Pane(self, app, "Summary")
         self.out.pack(fill="both", expand=True)
         ttk.Button(self.out.hdr, text="Copy", command=self.copy).pack(side="right")
+        self.find = FindBar(self, [self.out.text])
+        self.find.place_fn = lambda: self.find.pack(fill="x", pady=(8, 0), before=self.out)
+        ttk.Button(self.out.hdr, text="Find", command=self.find.open, width=6).pack(side="right", padx=(0, 6))
         row, self._fmts = _format_row(self, app, "sum_formats", engine.SUMMARY_FORMATS, ["pdf", "txt"], self.export)
         self.fmt_row = row
         ttk.Label(self.out.hdr, text="Made offline by the Qwen3 AI model. Check important details against the "
@@ -705,6 +698,7 @@ class SummaryTab(ttk.Frame):
     def recolor(self, p, dark):
         self.paste.recolor(p, dark)
         self.out.recolor(p, dark)
+        self.find.recolor(dark)
 
     def _transcript(self):
         app = self.app

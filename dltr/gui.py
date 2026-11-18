@@ -18,6 +18,7 @@ from .worker import Worker
 from .common import (APP_NAME, IS_MAC, IS_WIN, LOG, FORMATS, LANGUAGES, MODELS, asset, find_media, fmt_hms,
                      lang_name, load_settings, log, open_path, save_settings)
 from .theme import MONO, UI
+from .widgets import searchable
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -97,6 +98,8 @@ class App(BaseTk):
         self.models_win = None
         self.update_win = None
         self.wifi_win = None
+        self.wifi_admin = None
+        self._wifi_hidden = None     # the uploads count the reminder bar was hidden at
         self.sharing = None          # web.Sharing while "Share via Wi-Fi" is on
         self.find_hits, self.find_i = [], -1
         # player
@@ -122,6 +125,7 @@ class App(BaseTk):
         self.after(1000, self._tick)
         self.after(200, self._poll_player)
         self.after(4000, self._quiet_update_check)
+        self.after(1500, self.refresh_wifi_note, True)
         threading.Thread(target=media.clean_cache, daemon=True).start()
         if files:
             self.after(400, lambda: self.add(files))
@@ -224,6 +228,14 @@ class App(BaseTk):
         self.device_lbl = ttk.Label(right, text="Checking GPU …", style="Muted.TLabel")
         self.device_lbl.pack(anchor="e", pady=(4, 0))
         self.warn_lbl = ttk.Label(self, style="Warn.TLabel", wraplength=900, justify="left")
+        # reminder: files people uploaded over Wi-Fi are still on this PC
+        wb = self.wifi_note = ttk.Frame(self, padding=(12, 6, 12, 0))
+        self.wifi_note_lbl = ttk.Label(wb, style="Warn.TLabel")
+        self.wifi_note_lbl.pack(side="left")
+        ttk.Button(wb, text="Hide", command=self._hide_wifi_note).pack(side="right")
+        ttk.Button(wb, text="Admin…", command=self.open_wifi_admin).pack(side="right", padx=6)
+        ttk.Button(wb, text="Delete all…", command=lambda: self._wifi_delete_all()).pack(side="right")
+        ttk.Button(wb, text="Open folder", command=self._open_wifi_folder).pack(side="right", padx=6)
 
         # three tabs: Transcribe (the original window), Translate, Summary
         self.nb = ttk.Notebook(self)
@@ -256,9 +268,7 @@ class App(BaseTk):
         ttk.Label(opt, text="Language").grid(row=0, column=2, sticky="w", padx=(14, 6))
         lang = ttk.Combobox(opt, textvariable=self.v_lang, values=LANG_CHOICES, width=26)
         lang.grid(row=0, column=3, sticky="we")
-        lang.bind("<KeyRelease>", lambda e: self._filter_lang(lang))
-        lang.bind("<FocusOut>", lambda e: self._fix_lang(lang))
-        lang.bind("<<ComboboxSelected>>", lambda e: (lang.configure(values=LANG_CHOICES), lang.selection_clear()))
+        searchable(lang, LANG_CHOICES, AUTO)
         self.lang_box = lang
 
         r2 = ttk.Frame(opt)
@@ -366,8 +376,9 @@ class App(BaseTk):
         self.find_ent.bind("<Shift-Return>", lambda e: self._find_step(-1))
         self.find_ent.bind("<Escape>", lambda e: self.close_find())
         self.find_ent.bind("<F3>", lambda e: self._find_step(1))
-        self.bind_all(f"<{MOD}-f>", lambda e: (self.open_find(), "break")[1])
-        self.bind_all("<F3>", lambda e: self._find_step(1))
+        self.bind_all(f"<{MOD}-f>", lambda e: self._find_key(0))
+        self.bind_all("<F3>", lambda e: self._find_key(1))
+        self.bind_all("<Shift-F3>", lambda e: self._find_key(-1))
         self._hdr = hdr
 
         # player bar (like a media player: play/pause, time, seek, volume); the Translate tab has one too
@@ -448,17 +459,6 @@ class App(BaseTk):
         on = self.v_spk.get() and speakers.available()
         self.nspk_box.configure(state="readonly" if on else "disabled")
         self.nspk_lbl.configure(style="TLabel" if on else "Muted.TLabel")
-
-    def _filter_lang(self, box):
-        q = box.get().strip().lower()
-        box.configure(values=[c for c in LANG_CHOICES if q in c.lower()] if q else LANG_CHOICES)
-
-    def _fix_lang(self, box):
-        if box.get() not in LANG_CHOICES:
-            q = box.get().strip().lower()
-            match = [c for c in LANG_CHOICES if q and q in c.lower()]
-            box.set(match[0] if match else AUTO)
-        box.configure(values=LANG_CHOICES)
 
     def _recolor(self):
         p = self.pal
@@ -1086,6 +1086,17 @@ class App(BaseTk):
         if self.v_find.get():
             self._find_all()
 
+    def _find_key(self, d):
+        """Ctrl+F / F3 act on the Find of the tab you're looking at."""
+        i = self.nb.index("current")
+        if i and hasattr(self, "trans_tab"):
+            fb = (self.trans_tab, self.sum_tab)[i - 1].find
+            return fb.open() if d == 0 else fb.step(d)
+        if d == 0:
+            self.open_find()
+            return "break"
+        return self._find_step(d)
+
     def close_find(self):
         self.find_bar.pack_forget()
         self.text.tag_remove("find", "1.0", "end")
@@ -1156,6 +1167,60 @@ class App(BaseTk):
             self.wifi_win.win.focus_force()
             return
         self.wifi_win = WifiWindow(self)
+
+    # ------------------------------------------------------------ Wi-Fi uploads kept on this PC
+    def open_wifi_admin(self):
+        from .wifi_admin import AdminWindow
+        if self.wifi_admin is not None and self.wifi_admin.alive():
+            self.wifi_admin.win.lift()
+            self.wifi_admin.win.focus_force()
+            return
+        self.wifi_admin = AdminWindow(self)
+
+    def _open_wifi_folder(self):
+        from . import wifi_store
+        wifi_store.WORK.mkdir(parents=True, exist_ok=True)
+        open_path(wifi_store.WORK)
+
+    def _wifi_delete_all(self, parent=None):
+        from .wifi_admin import delete_all
+        delete_all(self, parent or self)
+
+    def _hide_wifi_note(self):
+        from . import wifi_store
+        self._wifi_hidden = wifi_store.stats()[0]
+        self.wifi_note.pack_forget()
+
+    def refresh_wifi_note(self, loop=False):
+        """Show the reminder bar while Wi-Fi uploads are stored (hidden until more arrive, if you press Hide)."""
+        from . import wifi_store
+
+        def work():
+            try:
+                n, size = wifi_store.stats()
+            except Exception:
+                n, size = 0, 0
+            self.events.put(("call", lambda: self._wifi_note_show(n, size)))
+        threading.Thread(target=work, daemon=True).start()
+        if loop:
+            self.after(10000, self.refresh_wifi_note, True)
+
+    def _wifi_note_show(self, n, size):
+        from . import wifi_store
+        if self._wifi_hidden is not None and n > self._wifi_hidden:
+            self._wifi_hidden = None
+        if n and self._wifi_hidden is None:
+            self.wifi_note_lbl.configure(text=f"⚠  {n} upload{'s' * (n != 1)} from Wi-Fi users "
+                                              f"({wifi_store.human(size)}) stored on this PC — don't forget to "
+                                              f"delete them when you're done.")
+            if not self.wifi_note.winfo_manager():
+                self.wifi_note.pack(fill="x", before=self.nb)
+        else:
+            self.wifi_note.pack_forget()
+        if n == 0:
+            self._wifi_hidden = None
+        if self.wifi_win is not None and self.wifi_win.alive():
+            self.wifi_win.stored(n, size)
 
     def stop_sharing(self):
         s, self.sharing = self.sharing, None

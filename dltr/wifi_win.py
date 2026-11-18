@@ -40,17 +40,25 @@ class WifiWindow:
             "code with the phone's camera). They upload a recording, and this PC transcribes, translates and "
             "summarises it; they play it and download the results in their browser.\n\n"
             "Keep this PC on with the app open. There's no password: anyone on this Wi-Fi who knows the address can "
-            "use it while sharing is on. Uploads are deleted when sharing stops.\n\n"
+            "use it while sharing is on. Their uploads are kept on this PC until you delete them (Admin…).\n\n"
             "Phone can't connect? The first time, Windows asks whether to allow dl_transcribe on networks: allow "
             "Private networks. Your Wi-Fi must also be set to Private in Settings → Network & internet.")).pack(
             anchor="w", pady=(10, 0))
         self.count = ttk.Label(f, style="Muted.TLabel")
         self.count.pack(anchor="w", pady=(10, 0))
+        self.store_row = ttk.Frame(f)
+        self.store_lbl = ttk.Label(self.store_row, style="Warn.TLabel", wraplength=440, justify="left")
+        self.store_lbl.pack(anchor="w")
+        sr = ttk.Frame(self.store_row)
+        sr.pack(anchor="w", pady=(4, 0))
+        ttk.Button(sr, text="Open folder", command=app._open_wifi_folder).pack(side="left")
+        ttk.Button(sr, text="Delete all…", command=lambda: app._wifi_delete_all(self.win)).pack(side="left", padx=6)
         row = ttk.Frame(f)
         row.pack(fill="x", pady=(12, 0))
         self.toggle = ttk.Button(row, command=self.flip, width=16)
         self.toggle.pack(side="left")
         ttk.Button(row, text="Close", command=self.close).pack(side="right")
+        ttk.Button(row, text="Admin…", command=app.open_wifi_admin).pack(side="right", padx=6)
         w.protocol("WM_DELETE_WINDOW", self.close)
         w.bind("<Escape>", lambda e: self.close())
         w.update_idletasks()
@@ -148,6 +156,17 @@ class WifiWindow:
         self.app.clipboard_append(u)
         self.count.configure(text=f"Copied {u}")
 
+    def stored(self, n, size):
+        """Reminder: uploads from Wi-Fi users still on this PC."""
+        from .wifi_store import human
+        if n:
+            self.store_lbl.configure(text=f"⚠  {n} upload{'s' * (n != 1)} ({human(size)}) stored on this PC. "
+                                          "Delete them when you no longer need them.")
+            if not self.store_row.winfo_manager():
+                self.store_row.pack(anchor="w", fill="x", pady=(8, 0), after=self.count)
+        else:
+            self.store_row.pack_forget()
+
     def _tick(self):
         if not self.alive():
             return
@@ -157,6 +176,9 @@ class WifiWindow:
             self.count.configure(text=(f"{n} recording{'s' * (n != 1)} from other devices" +
                                        (f" · {busy} being worked on or waiting" if busy else "")) if n else
                                  "No uploads yet.")
+        self._n = getattr(self, "_n", 0) + 1
+        if self._n % 4 == 1:
+            self.app.refresh_wifi_note()
         self.win.after(1500, self._tick)
 
     def close(self):
