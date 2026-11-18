@@ -69,6 +69,64 @@ def _speaker_at(turns, starts, a, b):
     return min(turns, key=lambda t: 0 if t[0] <= mid <= t[1] else min(abs(t[0] - mid), abs(t[1] - mid)))[2]
 
 
+_gender = None
+
+
+def _gender_model():
+    global _gender
+    if _gender is None:
+        import onnxruntime as ort
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = max(1, min(4, (os.cpu_count() or 4) // 2))
+        s = ort.InferenceSession(str(MODEL_DIR / "gender.onnx"), opts, providers=["CPUExecutionProvider"])
+        _gender = (s, s.get_inputs()[0].name)
+    return _gender
+
+
+def voices(audio, segments, n, sample_rate=16000):
+    """Male / female voice for each speaker, from an ECAPA-TDNN classifier (MIT, ~16 MB, assets/speakers).
+    Up to ~40 s of each speaker's longest sentences are scored and averaged. Returns one entry per speaker:
+    {"gender": "female" | "male" | None (not sure), "p": P(female)}."""
+    import numpy as np
+    if not n or not (MODEL_DIR / "gender.onnx").exists():
+        return []
+    try:
+        sess, inp = _gender_model()
+    except Exception as e:
+        log(f"  voice model unavailable: {e!r}")
+        return []
+    out = []
+    for k in range(n):
+        mine = sorted((s for s in segments if s.get("speaker") == k), key=lambda s: s["end"] - s["start"],
+                      reverse=True)
+        total, ps, ws = 0.0, [], []
+        for s in mine:
+            a, b = s["start"], min(s["end"], s["start"] + 6.0)
+            if b - a < 1.0:
+                continue
+            clip = audio[int(a * sample_rate):int(b * sample_rate)].astype(np.float32)
+            if len(clip) < sample_rate:
+                continue
+            try:
+                logits = sess.run(None, {inp: clip[None, :]})[0][0]
+            except Exception as e:
+                log(f"  voice check failed: {e!r}")
+                break
+            e_ = np.exp(logits - logits.max())
+            ps.append(float(e_[1] / e_.sum()))       # {0: male, 1: female}
+            ws.append(b - a)
+            total += b - a
+            if total >= 40:
+                break
+        if not ps:
+            out.append({"gender": None, "p": None})
+            continue
+        p = float(np.average(ps, weights=ws))
+        out.append({"gender": "female" if p >= 0.7 else "male" if p <= 0.3 else None, "p": round(p, 3)})
+    log(f"  voices: {[v['gender'] or '?' for v in out]}")
+    return out
+
+
 def assign(segments, turns):
     """Give every segment a "speaker" (0, 1, …). A sentence where the voice changes is split at the change.
     Speakers are renumbered in order of first appearance. Returns (segments, number of speakers)."""

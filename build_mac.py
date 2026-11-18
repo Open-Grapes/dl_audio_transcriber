@@ -61,6 +61,7 @@ def pyinstaller():
        "--collect-all", "langid", "--collect-all", "tokenizers",
        "--add-data", f"{ROOT / 'dltr' / 'web_page.html'}:dltr",
        "--collect-submodules", "zeroconf", "--collect-submodules", "qrcode",
+       "--hidden-import", "sounddevice", "--collect-all", "_sounddevice_data",
        "--hidden-import", "AVFoundation", "--hidden-import", "Foundation", "--hidden-import", "objc",
        "--distpath", WORK / "dist", "--workpath", WORK / "work", "--specpath", WORK, ROOT / "run.py")
 
@@ -76,6 +77,7 @@ def fill_bundle():
         "CFBundleShortVersionString": APP_VERSION, "CFBundleVersion": APP_VERSION,
         "LSMinimumSystemVersion": "14.0", "NSHighResolutionCapable": True,
         "NSRequiresAquaSystemAppearance": False,
+        "NSMicrophoneUsageDescription": "dl_transcribe listens only while you press the Speak button on the Chat tab, to type your question by voice. The audio stays on this Mac.",
         # "Open With" and dropping files on the Dock icon.
         "CFBundleDocumentTypes": [
             {"CFBundleTypeName": "Audio", "CFBundleTypeRole": "Viewer", "LSHandlerRank": "Alternate",
@@ -201,6 +203,9 @@ def smoke_test():
     res = json.loads((out / "dialog.json").read_text(encoding="utf-8"))
     assert "weather" in txt.lower() or "sunny" in txt.lower(), "the transcript doesn't contain the spoken words"
     assert len(res.get("speakers") or []) >= 2, f"expected 2 speakers, got {res.get('speakers')}"
+    genders = {v.get("gender") for v in res.get("voices") or []}
+    print("Voices:", res.get("voices"), flush=True)
+    assert {"male", "female"} <= genders, f"expected a male and a female voice (Daniel, Samantha), got {genders}"
     print("Transcribed on:", res.get("device"), flush=True)
     for ext in ("srt", "pdf"):
         assert (out / f"dialog.{ext}").stat().st_size > 100, f"dialog.{ext} is empty"
@@ -211,6 +216,14 @@ def smoke_test():
     st = json.loads(sj.read_text())
     print("selftest:", st, flush=True)
     assert "error" not in st, st.get("error")
+
+    # 2b. Microphone library + voice-to-text for the Chat tab's Speak button (the AI model isn't on CI).
+    cj = t / "selftest_chat.json"
+    subprocess.run([str(binary), "--selftest-chat", str(wav), str(cj)], timeout=600)
+    ch = json.loads(cj.read_text())
+    print("selftest chat:", ch, flush=True)
+    assert "error" not in ch, ch.get("error")
+    assert ch.get("dictated", "").strip(), "dictation returned no text"
     assert st["mp3_bytes"] > 10000 and st["length"] > 5, "MP3 conversion / opening failed"
     assert st["pdf_bytes"] > 10000, "PDF too small"
     if not st["playing"]:

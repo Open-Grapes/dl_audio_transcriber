@@ -357,6 +357,7 @@ class App(BaseTk):
         ttk.Checkbutton(hdr, text="Show timestamps", variable=self.v_ts).pack(side="right", padx=(10, 12))
         self.showspk_cb = ttk.Checkbutton(hdr, text="Show speakers", variable=self.v_showspk)
         self.showspk_cb.pack(side="right")
+        ttk.Button(hdr, text="Speakers…", command=self.open_speakers).pack(side="right", padx=(0, 8))
         self.find_btn = ttk.Button(hdr, text="Find", command=self.open_find, width=6)
         self.find_btn.pack(side="right", padx=(0, 12))
 
@@ -421,7 +422,11 @@ class App(BaseTk):
         self.nb.add(self.trans_tab, text="   Translate   ")
         self.sum_tab = SummaryTab(self.nb, self, self.trans_tab)
         self.nb.add(self.sum_tab, text="   Summary   ")
-        self.nb.bind("<<NotebookTabChanged>>", lambda e: self.sum_tab.refresh())
+        from .chat import ChatTab, NameFinder
+        self.names = NameFinder(self)
+        self.chat_tab = ChatTab(self.nb, self)
+        self.nb.add(self.chat_tab, text="   Chat   ")
+        self.nb.bind("<<NotebookTabChanged>>", lambda e: (self.sum_tab.refresh(), self.chat_tab.refresh()))
 
     def player_bar(self, parent, on_play, on_seek=None):
         """Play/pause, time, seek slider and volume, all driving the one audio player."""
@@ -477,6 +482,8 @@ class App(BaseTk):
         if hasattr(self, "trans_tab"):
             self.trans_tab.recolor(p, self.dark)
             self.sum_tab.recolor(p, self.dark)
+        if hasattr(self, "chat_tab"):
+            self.chat_tab.recolor(p, self.dark)
         self.text.tag_raise("find")
         self.text.tag_raise("findcur")
         self.text.tag_raise("sel")
@@ -841,6 +848,8 @@ class App(BaseTk):
                     self._set(item, status=f"✅ Done ({note})")
                 if item == self.preview_item:
                     self._preview(item)
+                if res.get("speakers") and hasattr(self, "names"):
+                    self.names.queue(item)
             self.progress["value"] = 1.0
             self._run_next()
         elif kind == "fail":
@@ -1008,6 +1017,9 @@ class App(BaseTk):
                     if name:
                         k = para[0].get("speaker") or 0
                         self.text.insert("end", name, ("spk", f"k{k}", f"p{idx}", "prot"))
+                        v = engine.voice_of(res, k)
+                        if v:
+                            self.text.insert("end", f"  {'♀' if v == 'female' else '♂'} {v}", ("ts", "prot"))
                         self.text.insert("end", "\n", ("prot",))
                     for k, s in enumerate(para):
                         self._insert_seg(s, idx, sep=(j if k else ""))
@@ -1089,6 +1101,8 @@ class App(BaseTk):
     def _find_key(self, d):
         """Ctrl+F / F3 act on the Find of the tab you're looking at."""
         i = self.nb.index("current")
+        if i == 3:
+            return "break"                 # Chat: nothing to find in
         if i and hasattr(self, "trans_tab"):
             fb = (self.trans_tab, self.sum_tab)[i - 1].find
             return fb.open() if d == 0 else fb.step(d)
@@ -1240,14 +1254,24 @@ class App(BaseTk):
             self.update_btn.configure(text="Check for updates", style="TButton")
 
     def _quiet_update_check(self):
-        """Once per start: if GitHub has a newer version, say so on the button (no pop-up)."""
+        """At most once a day (unless switched off in Check for updates): if GitHub has a newer version, say so on
+        the button (no pop-up)."""
         from . import updater
+        if not self.s.get("auto_update", True):
+            return
+        seen = self.s.get("latest_seen")
+        if seen and updater.is_newer(seen):
+            self.set_update_badge(seen)
+        if time.time() - self.s.get("last_update_check", 0) < 20 * 3600:
+            return
 
         def work():
             try:
                 info = updater.latest()
             except Exception:
                 return
+            self.s["last_update_check"] = time.time()
+            self.s["latest_seen"] = info["version"]
             if updater.is_newer(info["version"]):
                 self.events.put(("call", lambda: self.set_update_badge(info["version"])))
         threading.Thread(target=work, daemon=True).start()
@@ -1439,6 +1463,17 @@ class App(BaseTk):
         r["dirty"] = r["edited"] = True
         self._set(self.preview_item, status="✏️ Edited")
         self._render()
+
+    def open_speakers(self):
+        r = self.rows.get(self.preview_item) if self.preview_item else None
+        if not r or not r.get("result"):
+            self._flash("Pick a transcribed file first.")
+            return
+        if self.editing:
+            self._flash("Finish editing the transcript first.")
+            return
+        from .chat import SpeakersWindow
+        SpeakersWindow(self, self.preview_item)
 
     def _rename_speaker(self, k):
         r = self.rows.get(self.preview_item)

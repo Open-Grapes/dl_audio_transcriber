@@ -56,6 +56,25 @@ def _main(jobs, out, force_cpu):
                                     on_text=lambda t: out.put(("stext", jid, t)))
                 out.put(("sdone", jid, text, time.time() - t0))
                 continue
+            if kind == "chat":
+                from . import ai
+                ans = ai.chat(job["ctx"], job.get("history") or [], job["question"],
+                              on_text=lambda t: out.put(("ctext", jid, t)),
+                              progress=lambda f, t: out.put(("prog", jid, f, t)))
+                out.put(("cdone", jid, ans, time.time() - t0))
+                continue
+            if kind == "suggest":
+                from . import ai
+                out.put(("sugg", jid, ai.suggestions(job["ctx"], job.get("history") or [])))
+                continue
+            if kind == "names":
+                from . import ai
+                out.put(("names", jid, ai.find_names(job["ctx"])))
+                continue
+            if kind == "dictate":
+                out.put(("prog", jid, 0.3, "Turning your voice into text …"))
+                out.put(("dictated", jid, engine.dictate(job["audio"], job["model"], job.get("lang"))))
+                continue
             stage = {"t": t0}
 
             def prog(frac, text):
@@ -132,6 +151,6 @@ class Worker:
                 return
             if gen != self._gen:
                 return
-            if msg[0] in ("done", "fail", "downloaded", "tdone", "sdone"):
+            if msg[0] in ("done", "fail", "downloaded", "tdone", "sdone", "cdone", "sugg", "names", "dictated"):
                 self.busy_id = None
             self.on_event(*msg)

@@ -67,6 +67,7 @@ def pyinstaller():
                            "--collect-all", "sherpa_onnx", "--collect-all", "langid", "--collect-all", "tokenizers",
                            "--add-data", f"{ROOT / 'dltr' / 'web_page.html'};dltr", "--add-data", f"{ROOT / 'assets' / 'icon.png'};assets",
                            "--collect-submodules", "zeroconf", "--collect-submodules", "qrcode",
+                           "--hidden-import", "sounddevice", "--collect-all", "_sounddevice_data",
                            *nvidia_binaries(),
                            "--distpath", str(DIST), "--workpath", str(ROOT / "build"),
                            "--specpath", str(ROOT / "build"), str(ROOT / "run.py")])

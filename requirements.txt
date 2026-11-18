@@ -13,3 +13,4 @@ sherpa-onnx
 langid
 qrcode>=7.4
 zeroconf>=0.130
+sounddevice>=0.5

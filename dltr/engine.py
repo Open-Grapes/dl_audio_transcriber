@@ -136,6 +136,18 @@ def get_model(name, progress=None):
         return m, device
 
 
+def dictate(audio, name, language=None):
+    """Speech from the microphone (float32 mono 16 kHz) to text, for typing a chat question by voice."""
+    import numpy as np
+    m, _dev = get_model(name)
+    audio = np.asarray(audio, dtype=np.float32)
+    if len(audio) < 8000:
+        return ""
+    segs, _info = m.transcribe(audio, language=language or None, beam_size=5, vad_filter=True,
+                               condition_on_previous_text=False)
+    return " ".join(s.text.strip() for s in segs).strip()
+
+
 def probe_duration(path):
     try:
         import av
@@ -224,7 +236,7 @@ def transcribe(path, opts, on_progress=None, on_segment=None, cancel=None):
             frac = min(s.end / duration, 1.0) * span
             eta = el / frac - el if frac > 0.02 else None
             on_progress(frac, f"{fmt_hms(s.end)} / {fmt_hms(duration)}" + (f" · ~{fmt_hms(eta)} left" if eta else ""))
-    speakers = []
+    speakers, voices = [], []
     if want_spk and segments:
         from . import speakers as spk
         if not spk.available():
@@ -242,9 +254,13 @@ def transcribe(path, opts, on_progress=None, on_segment=None, cancel=None):
             segments, n = spk.assign(segments, turns)
             speakers = [f"Speaker {i + 1}" for i in range(n)]
             if n:
+                if on_progress:
+                    on_progress(0.99, "Recognising voices (male / female) …")
+                voices = spk.voices(audio, segments, n)
+            if n:
                 note = (note + "; " if note else "") + f"{n} speaker{'s' if n != 1 else ''}"
     return {
-        "file": str(path), "model": name, "device": device, "task": task, "note": note, "speakers": speakers,
+        "file": str(path), "model": name, "device": device, "task": task, "note": note, "speakers": speakers, "voices": voices,
         "language": detected if task == "transcribe" else "en", "spoken_language": detected,
         "language_probability": round(info.language_probability, 3), "duration": round(duration, 3),
         "segments": segments,
@@ -303,6 +319,12 @@ def speaker_name(result, seg):
     if not names or k is None:
         return None
     return names[k] if k < len(names) else f"Speaker {k + 1}"
+
+
+def voice_of(result, k):
+    """'female' / 'male' / None for speaker k (from the voice check after speaker detection)."""
+    v = result.get("voices") or []
+    return v[k].get("gender") if k is not None and 0 <= k < len(v) and isinstance(v[k], dict) else None
 
 
 def paragraphs(result):

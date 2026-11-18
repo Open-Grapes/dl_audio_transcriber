@@ -11,11 +11,12 @@ No length limit, no upload, no account. Uses Whisper (via [faster-whisper](https
 - Built-in **player**: play / pause, seek bar, volume. **Click any sentence** to play from there; the sentence being spoken is highlighted.
 - **Edit transcript** in place before exporting, and **Save audio as MP3** from any audio or video file.
 - **Find** (Ctrl+F, F3 for next) highlights every match in the transcript — also on the Translate tab (both boxes) and the Summary tab. Every language list is searchable: type a few letters ("chin") in the box, or while the list is open, and pick with a click or Enter. **Show speakers** hides or shows the speaker names (on screen and in exports).
-- **Check for updates** (top right) compares this version with the latest release on GitHub and, with **Update all**, downloads it, swaps the files when the app closes and restarts it. It also updates downloaded models. Settings and models are kept.
-- **Speakers** (optional): tick *Speakers (who said what)* to label each turn *Speaker 1*, *Speaker 2* … (Auto finds how many, or pick the number). Click a speaker name to rename it everywhere or to move a wrongly labelled part to another speaker. Runs offline with sherpa-onnx (pyannote segmentation 3.0, MIT + 3D-Speaker ERes2Net, Apache-2.0; ~45 MB, included).
+- **Check for updates** (top right) compares this version with the latest release on GitHub and, with **Update now**, downloads it, swaps the files when the app closes and restarts it. It also updates downloaded models. Settings and models are kept. It checks by itself once a day (switch that off in the same window).
+- **Speakers** (optional): tick *Speakers (who said what)* to label each turn *Speaker 1*, *Speaker 2* … (Auto finds how many, or pick the number). Each speaker is marked **♀ female / ♂ male voice**, and when the recording says their names ("Hi, I'm Sarah") the speakers are named automatically (with the AI model on the PC). **Speakers…** (or right-click a name) renames them everywhere, and a wrongly labelled part can be moved to another speaker. Runs offline with sherpa-onnx (pyannote segmentation 3.0, MIT + 3D-Speaker ERes2Net, Apache-2.0) and an ECAPA-TDNN voice classifier (MIT); ~61 MB, included.
 - **99 languages**, auto-detected — including English, Mandarin, Cantonese, Malay, Tamil, Indonesian, Thai, Vietnamese, Tagalog, Japanese, Korean, Hindi.
 - **Translate tab**: translate a transcript (or any pasted text) into any of **200 languages**, offline. Every sentence keeps its timestamp and speaker, the original and the translation are shown one above the other, and clicking a sentence highlights its match in both (and plays it). Export the translation as PDF / TXT / SRT / VTT / JSON / CSV.
 - **Share via Wi-Fi**: phones and other computers on your Wi-Fi open a link (or scan a QR code) and upload, play, transcribe, translate, summarise and download in their browser, using this PC.
+- **Chat tab**: ask the AI anything about a recording ("at which point does a woman speak?", "when do they talk about the budget?"). Answers point to clickable `[m:ss]` times that play the moment, three grey suggested follow-up questions appear after each answer, and **🎤 Speak** types your question by voice.
 - **Summary tab**: an offline **AI summary** of a transcript, translation or pasted text: overview, key points, key moments with their times and action items, in the language you pick.
 - **Mixed languages** (Transcribe tab): tick this for recordings that switch language (e.g. English ↔ Mandarin); language is detected per section instead of once.
 - **Vocabulary** box: type names, jargon or spellings (e.g. `Damien, Tanjong Pagar, CPF, Kubernetes`) to steer spelling.
@@ -102,6 +103,12 @@ Pick what to summarise (the **Transcript** selected on the Transcribe tab, the *
 
 On an RTX 4090 a summary of a few minutes of speech takes a few seconds and translation about 3 sentences a second; without an NVIDIA GPU (and on a Mac) expect minutes for a long recording.
 
+## Chat
+
+Ask anything about the recording open on the Transcribe tab: what was said, who said it, when, what it means. The AI reads the transcript with its times and speakers (and the summary or translation of that recording, if you made them), and answers in the language you ask in. Times in the answer like **[12:34]** are links: click one to play that moment. After each answer three grey **suggestions** offer follow-up questions; click one to ask it. **🎤 Speak** records your question, turns it into text (Whisper, offline), and you can edit it before **Send** (Enter). **New chat** starts over; each recording keeps its own chat while the app is open. **Speakers…** renames speakers (the names are used in the answers).
+
+It uses the same Qwen3-4B AI model as the Summary tab (4 GB, downloaded once). On an RTX 4090 answers take about a second; on a Mac or without an NVIDIA GPU, expect 20 seconds to a couple of minutes. Very long transcripts are searched first, and only the matching parts are given to the AI.
+
 ## Models
 
 None are included in the download (the translation and AI models download the first time you use the Translate or Summary tab). The first time you press Start with a model that isn't on the PC yet, the app asks: **Download <model>** (just that one) or **Download all** (every model, ~6.9 GB, so you can switch later without internet). Models are saved to `%LOCALAPPDATA%\dl_transcribe\models`. After that, everything runs offline.
@@ -139,7 +146,7 @@ Settings and log: `%LOCALAPPDATA%\dl_transcribe\`.
 
 ## Updates
 
-**Check for updates** asks GitHub for the latest release of this repo. If its tag (e.g. `v1.3`) is newer than the running version, **Update all** downloads `dl_transcribe-windows.zip` from that release; a small helper swaps the files once the app closes and starts it again. Downloaded models and settings are kept. If you're already on the latest version it says so. It also checks downloaded models for newer versions on Hugging Face.
+**Check for updates** asks GitHub for the latest release of this repo. If its tag (e.g. `v1.3`) is newer than the running version, **Update now** downloads `dl_transcribe-windows.zip` from that release; a small helper swaps the files once the app closes and starts it again. Downloaded models and settings are kept. If you're already on the latest version it says so. It also checks downloaded models for newer versions on Hugging Face.
 
 To publish a new version: raise `APP_VERSION` in `dltr/common.py`, build, then
 
@@ -157,4 +164,4 @@ gh run download -n dl_transcribe-mac-apple-silicon -D dist\MacOS
 
 ## Licenses
 
-Whisper models (MIT, OpenAI) via faster-whisper / CTranslate2 (MIT). Translation: NLLB-200 (Meta, CC-BY-NC-4.0, non-commercial use) and Qwen3-4B-Instruct-2507 (Alibaba, Apache-2.0), CTranslate2 conversions by OpenNMT and jncraton. Language detection: langid.py (BSD). Speaker detection: sherpa-onnx (Apache-2.0), pyannote segmentation 3.0 (MIT), 3D-Speaker ERes2Net (Apache-2.0).
+Whisper models (MIT, OpenAI) via faster-whisper / CTranslate2 (MIT). Translation: NLLB-200 (Meta, CC-BY-NC-4.0, non-commercial use) and Qwen3-4B-Instruct-2507 (Alibaba, Apache-2.0), CTranslate2 conversions by OpenNMT and jncraton. Language detection: langid.py (BSD). Speaker detection: sherpa-onnx (Apache-2.0), pyannote segmentation 3.0 (MIT), 3D-Speaker ERes2Net (Apache-2.0). Voice (male / female): JaesungHuh/voice-gender-classifier (MIT), ONNX q8 export by Alice-Sabrina-Ivy (MIT). Microphone: sounddevice / PortAudio (MIT).

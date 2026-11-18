@@ -177,6 +177,41 @@ def wifi(seconds="600", out=None):
     return 0
 
 
+def selftest_chat(src, out):
+    """--selftest-chat AUDIO OUT.json: the microphone library, voice-to-text (dictation) and, when the AI model
+    is on this computer, a chat answer with the speakers named. Used to check a built app."""
+    import json
+    import time
+    res = {}
+    try:
+        import sounddevice as sd
+        res["mic_devices"] = sum(1 for d in sd.query_devices() if d.get("max_input_channels", 0) > 0)
+        from faster_whisper.audio import decode_audio
+        from . import engine, models
+        audio = decode_audio(src, sampling_rate=16000)
+        name = next((m for m in ("large-v3-turbo", "tiny", "base", "small") if engine.is_downloaded(m)), "tiny")
+        t = time.time()
+        res["dictated"] = engine.dictate(audio[:16000 * 8], name)
+        res["dictate_s"] = round(time.time() - t, 1)
+        from . import ai
+        if models.installed(ai.AI_KEY):
+            r = engine.transcribe(src, {"model": name, "speakers": True})
+            ctx = {"title": "selftest", "speakers": [{"name": n, "voice": engine.voice_of(r, i)}
+                                                     for i, n in enumerate(r["speakers"])],
+                   "lines": [[s["start"], engine.speaker_name(r, s) or "", s["text"]] for s in r["segments"]]}
+            res["names"] = ai.find_names(ctx)
+            t = time.time()
+            res["answer"] = ai.chat(ctx, [], "At which point is a woman speaking?")
+            res["answer_s"] = round(time.time() - t, 1)
+            res["suggestions"] = ai.suggestions(ctx, [])
+    except Exception as e:
+        import traceback
+        res["error"] = f"{e!r}\n{traceback.format_exc()}"
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(res, fh, ensure_ascii=False, indent=1)
+    return 0 if "error" not in res else 1
+
+
 def main():
     args = sys.argv[1:]
     if args[:1] == ["--wifi"]:
@@ -189,6 +224,8 @@ def main():
         return check_update(args[1])
     if args[:1] == ["--selftest-media"] and len(args) == 3:
         return selftest_media(args[1], args[2])
+    if args[:1] == ["--selftest-chat"] and len(args) == 3:
+        return selftest_chat(args[1], args[2])
     from .gui import App
     App(files=args).mainloop()
     return 0

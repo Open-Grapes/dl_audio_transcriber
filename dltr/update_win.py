@@ -1,11 +1,13 @@
 """The Updates window: is there a newer dl_transcribe on GitHub, are the downloaded models current,
-and 'Update all' to bring everything up to date."""
+and 'Update now' to bring everything up to date."""
 
 import os
 import queue
+import re
 import shutil
 import tempfile
 import threading
+import time
 import tkinter as tk
 import traceback
 import webbrowser
@@ -27,43 +29,47 @@ class UpdateWindow:
         self.cancel = threading.Event()
         self.mwk = None
         w = self.win = tk.Toplevel(app)
-        w.title("Updates")
-        w.geometry("660x520")
-        w.minsize(520, 380)
+        w.title("Check for updates")
+        w.geometry("720x680")
+        w.minsize(540, 440)
         w.transient(app)
         w.configure(bg=app.pal["bg"])
-        f = ttk.Frame(w, padding=16)
+        f = ttk.Frame(w, padding=(18, 14, 18, 14))
         f.pack(fill="both", expand=True)
-        ttk.Label(f, text="Updates", style="Title.TLabel").pack(anchor="w")
-        grid = ttk.Frame(f)
-        grid.pack(fill="x", pady=(10, 6))
-        ttk.Label(grid, text="This version", style="Muted.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 16))
-        ttk.Label(grid, text=APP_VERSION).grid(row=0, column=1, sticky="w")
-        ttk.Label(grid, text="Latest on GitHub", style="Muted.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 16),
-                                                                            pady=(4, 0))
-        self.latest_lbl = ttk.Label(grid, text="checking …", wraplength=440, justify="left")
-        self.latest_lbl.grid(row=1, column=1, sticky="w", pady=(4, 0))
-        ttk.Label(grid, text="Models", style="Muted.TLabel").grid(row=2, column=0, sticky="nw", padx=(0, 16),
-                                                                  pady=(4, 0))
-        self.models_lbl = ttk.Label(grid, text="checking …", wraplength=440, justify="left")
-        self.models_lbl.grid(row=2, column=1, sticky="w", pady=(4, 0))
+        ttk.Label(f, text=f"{APP_NAME} {APP_VERSION}  (this version)",
+                  font=(theme.UI, 12 + theme._S, "bold")).pack(anchor="w")
+        self.head = tk.Label(f, font=(theme.UI, 14 + theme._S, "bold"), bg=app.pal["bg"], fg=app.pal["text"],
+                             anchor="w", justify="left", wraplength=640)
+        self.head.pack(anchor="w", fill="x", pady=(10, 0))
+        self.sub = ttk.Label(f, style="Muted.TLabel", wraplength=640, justify="left")
+        self.sub.pack(anchor="w", pady=(2, 0))
+        self.models_lbl = ttk.Label(f, style="Muted.TLabel", wraplength=640, justify="left")
+        self.models_lbl.pack(anchor="w", pady=(2, 8))
 
         # buttons + progress first (packed at the bottom), so the notes box can't push them out of view
         b = ttk.Frame(f)
         b.pack(side="bottom", fill="x", pady=(10, 0))
-        self.status = ttk.Label(f, style="Muted.TLabel", wraplength=600, justify="left")
-        self.status.pack(side="bottom", fill="x", pady=(6, 0))
         self.pbar = ttk.Progressbar(f, maximum=1.0)
-        self.pbar.pack(side="bottom", fill="x", pady=(10, 0))
-        ttk.Label(f, text="What's new", style="Muted.TLabel").pack(anchor="w", pady=(10, 4))
+        self.pbar.pack(side="bottom", fill="x", pady=(8, 0))
+        self.status = ttk.Label(f, wraplength=640, justify="left")
+        self.status.pack(side="bottom", fill="x", pady=(6, 0))
+        self.auto = tk.BooleanVar(value=app.s.get("auto_update", True))
+        ttk.Checkbutton(f, text="Check for updates automatically (once a day)", variable=self.auto,
+                        command=lambda: app.s.__setitem__("auto_update", self.auto.get())).pack(
+            side="bottom", anchor="w", pady=(10, 0))
         p = app.pal
-        self.notes = tk.Text(f, height=8, wrap="word", relief="flat", padx=10, pady=8, font=(theme.UI, 9),
-                             bg=p["field"], fg=p["text"], highlightthickness=1, highlightbackground=p["line"],
-                             borderwidth=0)
+        self.notes = tk.Text(f, height=10, wrap="word", relief="flat", padx=12, pady=10,
+                             font=(theme.UI, 10 + theme._S), bg=p["field"], fg=p["text"], highlightthickness=1,
+                             highlightbackground=p["line"], borderwidth=0, spacing1=1, spacing3=3)
         self.notes.pack(fill="both", expand=True)
+        self.notes.tag_configure("b", font=(theme.UI, 10 + theme._S, "bold"))
+        self.notes.tag_configure("i", font=(theme.UI, 10 + theme._S, "italic"))
+        self.notes.tag_configure("code", font=("Menlo" if IS_MAC else "Consolas", 9 + theme._S))
+        self.notes.tag_configure("h", font=(theme.UI, 11 + theme._S, "bold"), spacing1=6)
+        self.notes.tag_configure("li", lmargin1=14, lmargin2=30)
         self.notes.configure(state="disabled")
 
-        self.go = ttk.Button(b, text="Update all", style="Accent.TButton", command=self.update_all, state="disabled")
+        self.go = ttk.Button(b, text="Update now", style="Accent.TButton", command=self.update_all, state="disabled")
         self.go.pack(side="left")
         self.recheck = ttk.Button(b, text="Check again", command=self.check)
         self.recheck.pack(side="left", padx=6)
@@ -104,11 +110,53 @@ class UpdateWindow:
             pass
         self.win.after(100, self._poll)
 
-    def _set_notes(self, text):
-        self.notes.configure(state="normal")
-        self.notes.delete("1.0", "end")
-        self.notes.insert("1.0", text)
-        self.notes.configure(state="disabled")
+    def _headline(self, text, kind=None):
+        colors = {"ok": ("#1a7f37", "#4cc76a"), "new": ("#0969da", "#58a6ff"), "bad": ("#cf222e", "#ff7b72")}
+        self.head.configure(text=text, fg=colors[kind][bool(self.app.dark)] if kind else self.app.pal["text"])
+
+    _INLINE = re.compile(r"(\*\*.+?\*\*|`[^`]+`|(?<!\w)_[^_]+_(?!\w)|(?<![\w*])\*[^*\s][^*]*\*(?!\w))")
+
+    def _inline(self, text, extra=()):
+        for part in self._INLINE.split(text):
+            if not part:
+                continue
+            if part.startswith("**") and part.endswith("**") and len(part) > 4:
+                self.notes.insert("end", part[2:-2], ("b", *extra))
+            elif part.startswith("`") and part.endswith("`") and len(part) > 2:
+                self.notes.insert("end", part[1:-1], ("code", *extra))
+            elif part[0] in "_*" and part[-1] == part[0] and len(part) > 2:
+                self.notes.insert("end", part[1:-1], ("i", *extra))
+            else:
+                self.notes.insert("end", part, extra)
+
+    def _set_notes(self, text, title=None):
+        """Release notes (Markdown) shown formatted: bold, italics, code, bullet lists, headings, simple tables."""
+        t = self.notes
+        t.configure(state="normal")
+        t.delete("1.0", "end")
+        if title:
+            t.insert("end", title + "\n", ("h",))
+        for line in (text or "").replace("\r", "").split("\n"):
+            s = line.strip()
+            if not s:
+                t.insert("end", "\n")
+            elif "-" in s and re.match(r"^\|?[\s:|-]+\|?$", s):      # table separator |---|---|
+                continue
+            elif s.startswith("|"):
+                cells = [c.strip() for c in s.strip("|").split("|")]
+                self._inline("   ".join(c for c in cells if c), ("li",))
+                t.insert("end", "\n")
+            elif s.startswith("#"):
+                self._inline(s.lstrip("#").strip(), ("h",))
+                t.insert("end", "\n")
+            elif re.match(r"^[-*] ", s):
+                t.insert("end", "•  ", ("li",))
+                self._inline(s[2:], ("li",))
+                t.insert("end", "\n")
+            else:
+                self._inline(s)
+                t.insert("end", "\n")
+        t.configure(state="disabled")
 
     def _app_newer(self):
         return bool(self.info and updater.is_newer(self.info["version"]))
@@ -120,13 +168,20 @@ class UpdateWindow:
         self.busy = True
         self.go.configure(state="disabled")
         self.recheck.configure(state="disabled")
-        self.status.configure(text="Asking GitHub for the latest version …")
-        self.latest_lbl.configure(text="checking …")
-        self.models_lbl.configure(text="checking …")
-        self.pbar.configure(mode="indeterminate")
-        self.pbar.start(12)
+        self._headline("Checking for updates …")
+        self.sub.configure(text="Asking GitHub for the latest version.")
+        self.status.configure(text="")
+        self.models_lbl.configure(text="Models: checking …")
+        have = [k for k in models.ALL if models.installed(k)]
+        steps = 1 + len(have)                     # GitHub, then each downloaded model: the bar fills 0 -> 100 %
+        self.pbar.stop()
+        self.pbar.configure(mode="determinate", value=0.02)
+
+        def step(done, text):
+            self._ui(lambda: (self.pbar.configure(value=max(0.02, done / steps)), self.status.configure(text=text)))
 
         def work():
+            step(0, "Asking GitHub for the latest version …")
             info, err = None, None
             try:
                 info = updater.latest()
@@ -137,15 +192,15 @@ class UpdateWindow:
                 err = f"Update check failed: {e}"
             self._ui(lambda: self._show_app(info, err))
             ups, merr = [], None
-            for k in models.ALL:
-                if not models.installed(k):
-                    continue
+            for i, k in enumerate(have):
+                step(1 + i, f"Checking the models for updates: {k} ({i + 1} of {len(have)}) …")
                 try:
                     if models.check_update(k)[0] == "update":
                         ups.append(k)
                 except Exception as e:
                     merr = e
                     break
+            step(steps, "")
             self._ui(lambda: self._show_models(ups, merr))
             self._ui(self._checked)
         threading.Thread(target=work, daemon=True).start()
@@ -153,19 +208,24 @@ class UpdateWindow:
     def _show_app(self, info, err):
         self.info, self.app_err = info, err
         if err:
-            self.latest_lbl.configure(text=err)
+            self._headline("Couldn't check for updates", "bad")
+            self.sub.configure(text=err)
             self._set_notes("")
             return
-        when = f"  (released {info['published']})" if info.get("published") else ""
-        priv = "  · seen with this PC's GitHub login (private project)" if info.get("private") else ""
+        self.app.s["last_update_check"] = time.time()
+        self.app.s["latest_seen"] = info["version"]
+        line = f"Latest on GitHub: {info['version']}"
+        if info.get("published"):
+            line += f", released {info['published']}"
+        if info.get("private"):
+            line += "  ·  checked with this PC's GitHub login (private project)"
+        self.sub.configure(text=line)
         if self._app_newer():
-            txt = f"{info['version']}{when} — a newer version is available{priv}"
-            if not info.get("asset"):
-                txt += f"\n(but that release has no {updater.asset_name()} to download yet)"
+            self._headline(f"Version {info['version']} is available", "new")
         else:
-            txt = f"{info['version']}{when} — you're on the latest version ✓{priv}"
-        self.latest_lbl.configure(text=txt)
-        self._set_notes(info.get("notes") or "(no release notes)")
+            self._headline(f"You're on the latest version ({APP_VERSION}) ✔", "ok")
+        self._set_notes((info.get("notes") or "").strip() or "No release notes.",
+                        title=f"What's new in {info['version']}:")
 
     def _show_models(self, ups, err):
         self.model_updates = ups
@@ -175,9 +235,9 @@ class UpdateWindow:
         elif not have:
             self.models_lbl.configure(text="No models downloaded yet.")
         elif ups:
-            self.models_lbl.configure(text=f"Newer version online: {', '.join(ups)}")
+            self.models_lbl.configure(text=f"Models: newer version online for {', '.join(ups)}")
         else:
-            self.models_lbl.configure(text=f"All downloaded models are up to date ✓ ({', '.join(have)})")
+            self.models_lbl.configure(text=f"Models: all up to date ✔  ({', '.join(have)})")
 
     def _can_app(self):
         ok, _why = updater.can_install()
@@ -185,15 +245,17 @@ class UpdateWindow:
 
     def _checked(self):
         self.busy = False
-        self.pbar.stop()
-        self.pbar.configure(mode="determinate", value=0)
+        self.pbar.configure(value=1.0)              # check finished: full bar
         self.recheck.configure(state="normal")
         todo = self._can_app() or bool(self.model_updates)
         self.go.configure(state="normal" if todo else "disabled")
         if self._app_newer() and not updater.can_install()[0]:
             self.status.configure(text=updater.can_install()[1])
         elif todo:
-            self.status.configure(text="Press Update all to download and install the updates.")
+            what = " and ".join(x for x in (f"{APP_NAME} {self.info['version']}" if self._can_app() else "",
+                                            "the model updates" if self.model_updates else "") if x)
+            self.status.configure(text=f"Update now downloads {what} and installs it. "
+                                       "Your settings and models are kept.")
         elif not self.app_err:
             self.status.configure(text="Everything is up to date.")
         else:
@@ -214,6 +276,7 @@ class UpdateWindow:
         self.go.configure(state="disabled")
         self.recheck.configure(state="disabled")
         self.close_btn.configure(text="Cancel")
+        self.pbar.configure(value=0)
         steps = len(ups) + (1 if do_app else 0)
 
         def prog(frac, text):
