@@ -15,7 +15,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from . import engine, media, models, speakers, theme
 from .worker import Worker
-from .common import (APP_NAME, IS_MAC, IS_WIN, LOG, FORMATS, LANGUAGES, MODELS, asset, find_media, fmt_hms,
+from .common import (APP_NAME, APP_VERSION, IS_MAC, IS_WIN, LOG, FORMATS, LANGUAGES, MODELS, asset, find_media, fmt_hms,
                      lang_name, load_settings, log, open_path, save_settings)
 from .theme import MONO, UI
 from .widgets import searchable
@@ -80,7 +80,7 @@ def sound(ok):
 class App(BaseTk):
     def __init__(self, files=()):
         super().__init__()
-        self.title(APP_NAME)
+        self.title(f"{APP_NAME} (v{APP_VERSION})")
         self.geometry("1100x880")
         self.minsize(860, 640)
         set_icon(self)
@@ -1019,7 +1019,7 @@ class App(BaseTk):
                         self.text.insert("end", name, ("spk", f"k{k}", f"p{idx}", "prot"))
                         v = engine.voice_of(res, k)
                         if v:
-                            self.text.insert("end", f"  {'♀' if v == 'female' else '♂'} {v}", ("ts", "prot"))
+                            self.text.insert("end", f"  {'♀' if v == 'female' else '♂'} {v.capitalize()}", ("ts", "prot"))
                         self.text.insert("end", "\n", ("prot",))
                     for k, s in enumerate(para):
                         self._insert_seg(s, idx, sep=(j if k else ""))

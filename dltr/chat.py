@@ -140,7 +140,7 @@ class SpeakersWindow:
                                                                               padx=(0, 10), pady=3)
             var = tk.StringVar(value=n)
             ttk.Entry(grid, textvariable=var, width=28).grid(row=k, column=1, sticky="w", pady=3)
-            ttk.Label(grid, text={"female": "♀  female voice", "male": "♂  male voice"}.get(v, "voice not sure"),
+            ttk.Label(grid, text={"female": "♀  Female voice", "male": "♂  Male voice"}.get(v, "Voice not sure"),
                       style="TLabel" if v else "Muted.TLabel").grid(row=k, column=2, sticky="w", padx=(12, 0))
             self.vars.append(var)
         if not self.names:
@@ -257,6 +257,8 @@ class ChatTab(ttk.Frame):
         self.send_btn.pack(fill="x")
         self.mic_btn = ttk.Button(btns, text="🎤  Speak", command=self.mic, width=10)
         self.mic_btn.pack(fill="x", pady=(6, 0))
+        self.mic_pick = ttk.Button(btns, text="Mic ▾", command=self._mic_menu, width=10)
+        self.mic_pick.pack(fill="x", pady=(4, 0))
         self.ask.bind("<Return>", lambda e: (self.send(), "break")[1])
         self.ask.bind("<Shift-Return>", lambda e: None)
         self.ask.bind("<KP_Enter>", lambda e: (self.send(), "break")[1])
@@ -402,7 +404,7 @@ class ChatTab(ttk.Frame):
         t = self.pane.text
         t.configure(state="normal")
         try:
-            t.delete("live.first", "end")
+            t.delete("live.first", "end-1c")     # not "end": Tk would also eat the newline before it
         except tk.TclError:
             pass
         start = t.index("end-1c")
@@ -568,6 +570,66 @@ class ChatTab(ttk.Frame):
             self._flash(f"Problem: {msg}")
 
     # ------------------------------------------------------------ microphone
+    @staticmethod
+    def _mics():
+        """(index, name) of the input devices, once each (only the system's main sound driver; the others list
+        the same microphones again), plus the index of the system default."""
+        import sounddevice as sd
+        devs = sd.query_devices()
+        try:
+            dflt = sd.default.device[0]
+        except Exception:
+            dflt = -1
+        host = devs[dflt]["hostapi"] if isinstance(dflt, int) and 0 <= dflt < len(devs) else 0
+        out, seen = [], set()
+        for i, d in enumerate(devs):
+            n = d["name"].strip()
+            if (d["hostapi"] == host and d.get("max_input_channels", 0) > 0 and n not in seen
+                    and "sound mapper" not in n.lower() and "primary sound capture" not in n.lower()):
+                seen.add(n)
+                out.append((i, n))
+        return out, dflt
+
+    def _mic_device(self):
+        """Index of the chosen microphone, or None for the system default (also when it's unplugged)."""
+        want = self.app.s.get("mic") or ""
+        if not want:
+            return None
+        try:
+            mics, _ = self._mics()
+        except Exception:
+            return None
+        return next((i for i, n in mics if n == want), None)
+
+    def _mic_menu(self):
+        try:
+            mics, dflt = self._mics()
+        except Exception as e:
+            self._flash(f"The microphone isn't available: {e}")
+            return
+        cur = self.app.s.get("mic") or ""
+        if cur and cur not in [n for _i, n in mics]:
+            cur = ""                                       # chosen one isn't plugged in now
+        p = self.app.pal
+        m = tk.Menu(self, tearoff=0, bg=p["panel"], fg=p["text"], activebackground=p["accent"],
+                    activeforeground="#ffffff")
+        self._mic_var = tk.StringVar(value=cur)
+        dname = next((n for i, n in mics if i == dflt), "")
+        m.add_radiobutton(label="System default" + (f"  ({dname})" if dname else ""), value="",
+                          variable=self._mic_var, command=lambda: self._set_mic(""))
+        m.add_separator()
+        for _i, n in mics:
+            m.add_radiobutton(label=n, value=n, variable=self._mic_var, command=lambda n=n: self._set_mic(n))
+        if not mics:
+            m.add_command(label="No microphone found", state="disabled")
+        b = self.mic_pick
+        m.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
+
+    def _set_mic(self, name):
+        self.app.s["mic"] = name
+        self.app._save()
+        self._flash(f"Microphone: {name or 'system default'}")
+
     def mic(self):
         if self.rec is not None:
             self._mic_stop()
@@ -582,15 +644,21 @@ class ChatTab(ttk.Frame):
 
         def cb(indata, _n, _t, _status):
             frames.append(indata[:, 0].copy())
+        dev = self._mic_device()
+        rate = 16000
         try:
-            stream = sd.InputStream(samplerate=16000, channels=1, dtype="float32", callback=cb)
+            try:
+                stream = sd.InputStream(device=dev, samplerate=16000, channels=1, dtype="float32", callback=cb)
+            except Exception:                              # mic can't do 16 kHz itself: record at its own rate
+                rate = int(sd.query_devices(dev, "input")["default_samplerate"])
+                stream = sd.InputStream(device=dev, samplerate=rate, channels=1, dtype="float32", callback=cb)
             stream.start()
         except Exception as e:
             log(f"mic: {e!r}")
             self._flash(f"Couldn't open the microphone: {e}. Check it's plugged in and allowed in the system's "
                         "privacy settings.")
             return
-        self.rec = (stream, frames)
+        self.rec = (stream, frames, rate)
         self.mic_btn.configure(text="■  Done")
         self._flash("Listening … speak now, then press ■ Done (or Enter).")
         self._mic_level()
@@ -602,14 +670,14 @@ class ChatTab(ttk.Frame):
         frames = self.rec[1]
         if frames:
             lvl = float(np.abs(frames[-1]).max()) if len(frames[-1]) else 0.0
-            secs = sum(len(f) for f in frames) / 16000
+            secs = sum(len(f) for f in frames) / self.rec[2]
             self.progress["value"] = min(1.0, lvl * 3)
             self._flash(f"Listening … {secs:.0f} s  (press ■ Done when you've finished)")
         self.after(150, self._mic_level)
 
     def _mic_stop(self):
         import numpy as np
-        stream, frames = self.rec
+        stream, frames, rate = self.rec
         self.rec = None
         try:
             stream.stop()
@@ -618,6 +686,9 @@ class ChatTab(ttk.Frame):
             pass
         self.progress["value"] = 0
         audio = np.concatenate(frames) if frames else np.zeros(0, np.float32)
+        if rate != 16000 and len(audio):
+            n = int(len(audio) * 16000 / rate)
+            audio = np.interp(np.linspace(0, len(audio) - 1, n), np.arange(len(audio)), audio).astype(np.float32)
         if len(audio) < 8000:
             self.mic_btn.configure(text="🎤  Speak")
             self._flash("That was too short. Press 🎤 Speak and talk for a moment.")

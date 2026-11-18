@@ -441,6 +441,17 @@ def chat(ctx, history, question, on_text=None, cancel=None, progress=None):
     return tok.decode(ids, skip_special_tokens=True).strip()
 
 
+def _user_lang(history):
+    """Language the user writes in, from all their questions together (one short question alone is easy to
+    misread: "make it a pdf" can look Spanish). Plain English letters and few words -> English."""
+    text = " ".join(q for q, _a in history[-4:]).strip()
+    if not text:
+        return "eng_Latn"
+    if text.isascii() and len(text.split()) < 25:
+        return "eng_Latn"
+    return langs.detect(text, fallback="eng_Latn")
+
+
 def suggestions(ctx, history, n=3):
     """n short follow-up questions the user might ask next (or starter questions when history is empty)."""
     model, tok, dev = _load(AI_KEY)
@@ -455,7 +466,7 @@ def suggestions(ctx, history, n=3):
         convo = "\n\n".join(f"User: {q}\nAssistant: {a[:1500]}" for q, a in history[-2:])
         task = (f"Here is the conversation so far:\n{convo}\n\nSuggest {n} short follow-up questions the user could "
                 "ask next, to dig deeper into this topic or to understand what it means. ")
-        lang = f"Write them in {langs.ai_name(langs.detect(last_q))}, the language of the user's last question. "
+        lang = f"Write them in {langs.ai_name(_user_lang(history))}, the language the user writes in. "
     else:
         task = (f"Suggest {n} short, useful questions a user might ask about this recording (main points, "
                 "decisions, who said what, when something was mentioned). ")
@@ -505,5 +516,5 @@ def find_names(ctx):
         if isinstance(name, str):
             name = name.strip().strip(".")
             if 1 < len(name) <= 40 and name.lower() in text and not name.lower().startswith("speaker"):
-                res[i] = name
+                res[i] = " ".join(w[:1].upper() + w[1:] for w in name.split())    # "ben" -> "Ben"
     return res
