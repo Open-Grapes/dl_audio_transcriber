@@ -220,11 +220,12 @@ class _Pane(ttk.Frame):
         if edit:
             m.add_command(label="Cut", command=lambda: t.event_generate("<<Cut>>"),
                           state="normal" if has_sel else "disabled")
-        m.add_command(label="Copy", command=self._copy_sel, state="normal" if has_sel else "disabled")
+        # one Copy: the highlighted text, or (with nothing highlighted) the sentence that was right-clicked
+        sent = i is not None and self.seg_text and not edit
+        m.add_command(label="Copy", command=self._copy_sel if has_sel else lambda: self._copy(self.seg_text(i)),
+                      state="normal" if has_sel or sent else "disabled")
         if edit:
             m.add_command(label="Paste", command=lambda: (t.focus_set(), t.event_generate("<<Paste>>")))
-        if i is not None and self.seg_text and not edit:
-            m.add_command(label="Copy this sentence", command=lambda: self._copy(self.seg_text(i)))
         m.add_separator()
         m.add_command(label="Select all", command=lambda: (t.tag_add("sel", "1.0", "end-1c"), t.focus_set()))
         if self.copy_all:
@@ -372,6 +373,7 @@ class TranslateTab(ttk.Frame):
         self.bot = _Pane(pane, app, "Translation")
         pane.add(self.top, weight=1)
         pane.add(self.bot, weight=1)
+        theme.SashGrip(pane)
         ttk.Button(self.top.hdr, text="Copy", command=lambda: self.copy(False)).pack(side="right")
         ttk.Button(self.bot.hdr, text="Copy", command=lambda: self.copy(True)).pack(side="right")
         self.find = FindBar(self, [self.top.text, self.bot.text])
@@ -1085,7 +1087,7 @@ class TranslateTab(ttk.Frame):
                 self.after(0, lambda: (self._flash(msg), open_path(paths[0], reveal=True) if paths else None))
             except Exception as e:
                 log(f"translation export failed: {e}")
-                self.after(0, lambda: self._flash(f"Export problem: {e}"))
+                self.after(0, lambda e=e: self._flash(f"Export problem: {e}"))
         threading.Thread(target=run, daemon=True).start()
 
 
@@ -1139,14 +1141,19 @@ class SummaryTab(ttk.Frame):
         self.progress = ttk.Progressbar(self, mode="determinate", maximum=1.0)
         self.progress.pack(fill="x", pady=(10, 0))
 
-        self.paste = _Pane(self, app, "Text to summarise (type or paste here)")
+        # the AI summary on top, the text it works from below; drag the divider between them
+        split = ttk.PanedWindow(self, orient="vertical")
+        split.pack(fill="both", expand=True, pady=(4, 0))
+        self.out = _Pane(split, app, "Summary")
+        self.paste = _Pane(split, app, "Text to summarise (type or paste here)")
+        split.add(self.out, weight=3)
+        split.add(self.paste, weight=1)
+        theme.SashGrip(split)
         self._filled = None
         self.paste.text.configure(state="normal", cursor="xterm", height=8)
-        self.out = _Pane(self, app, "Summary")
-        self.out.pack(fill="both", expand=True)
         ttk.Button(self.out.hdr, text="Copy", command=self.copy).pack(side="right")
         self.find = FindBar(self, [self.out.text])
-        self.find.place_fn = lambda: self.find.pack(fill="x", pady=(8, 0), before=self.out)
+        self.find.place_fn = lambda: self.find.pack(fill="x", pady=(8, 0), before=split)
         ttk.Button(self.out.hdr, text="Find", command=self.find.open, width=6).pack(side="right", padx=(0, 6))
         row, self._fmts = _format_row(self, app, "sum_formats", engine.SUMMARY_FORMATS, ["pdf", "txt"], self.export)
         self.fmt_row = row
@@ -1155,7 +1162,8 @@ class SummaryTab(ttk.Frame):
         self.fmt_row.pack(fill="x", pady=(10, 0))
         self.status = ttk.Label(self, style="Muted.TLabel", wraplength=900, justify="left")
         self.status.pack(fill="x", pady=(8, 0))
-        self.out.message("Choose what to summarise above and press  Summarise.\n\nYou get an overview, the key "
+        self.out.message("Choose what to summarise (it shows in the box below, where you can edit it) and press  "
+                         "Summarise.  Drag the line between the two boxes to make either one bigger.\n\nYou get an overview, the key "
                          "points, key moments with their times (for transcripts) and any action items, in the "
                          "language you pick.")
         self._source_ui()
@@ -1204,8 +1212,6 @@ class SummaryTab(ttk.Frame):
         prev = getattr(self, "_shown", None)
         if switched and prev == "paste":
             self._paste_text = self._box()                 # keep what was typed for Pasted text
-        if not self.paste.winfo_ismapped():
-            self.paste.pack(fill="both", expand=False, before=self.out)
         if f == "paste":
             if switched or prev != "paste":
                 self._set_box(getattr(self, "_paste_text", ""))
@@ -1371,5 +1377,5 @@ class SummaryTab(ttk.Frame):
                 self.after(0, lambda: (self._flash(msg), open_path(paths[0], reveal=True) if paths else None))
             except Exception as e:
                 log(f"summary export failed: {e}")
-                self.after(0, lambda: self._flash(f"Export problem: {e}"))
+                self.after(0, lambda e=e: self._flash(f"Export problem: {e}"))
         threading.Thread(target=run, daemon=True).start()

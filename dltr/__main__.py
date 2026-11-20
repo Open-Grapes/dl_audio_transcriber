@@ -259,8 +259,27 @@ def main():
         return selftest_media(args[1], args[2])
     if args[:1] == ["--selftest-chat"] and len(args) == 3:
         return selftest_chat(args[1], args[2])
+    import os
     from .gui import App
-    App(files=args).mainloop()
+    # --selftest-restart OUT: open the window, press "Restart now" (as the Theme window does), and the reopened
+    # copy writes OUT (with its version and theme) and closes. Checks that a restart really comes back.
+    if args[:1] == ["--selftest-restart"] and len(args) == 2:
+        os.environ["DLTR_RESTART_MARK"] = args[1]
+        app = App(files=[])
+        app.after(3000, app.restart)
+        app.mainloop()
+        return 0
+    mark = os.environ.pop("DLTR_RESTART_MARK", None)
+    app = App(files=args)
+    if mark:
+        def done():
+            from . import theme
+            from .common import APP_VERSION
+            with open(mark, "w", encoding="utf-8") as fh:
+                fh.write(f"restarted ok: {APP_VERSION} {theme.STYLE} pid {os.getpid()}")
+            app._close()
+        app.after(3000, done)
+    app.mainloop()
     return 0
 
 

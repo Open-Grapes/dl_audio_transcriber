@@ -251,8 +251,10 @@ class ChatTab(ttk.Frame):
         ttk.Button(top, text="📎  Add file…", command=self.add_file).pack(side="right")
         self._await = None             # a recording added here that's being transcribed
 
-        self.pane = _Pane(self, app, "Chat")
-        self.pane.pack(fill="both", expand=True)
+        # the answers on top, the question box below; drag the divider between them
+        split = ttk.PanedWindow(self, orient="vertical")
+        split.pack(fill="both", expand=True, pady=(4, 0))
+        self.pane = _Pane(split, app, "Chat")
         ttk.Label(self.pane.hdr, style="Small.TLabel", text="Answers come from the offline Qwen3 AI. Click a "
                   "[time] to play that moment. Check important details in the transcript.").pack(side="right")
         t = self.pane.text
@@ -260,14 +262,18 @@ class ChatTab(ttk.Frame):
         t.tag_bind("time", "<Enter>", lambda e: t.configure(cursor="hand2"))
         t.tag_bind("time", "<Leave>", lambda e: t.configure(cursor="arrow"))
 
-        self.sugg = ttk.Frame(self)
+        low = ttk.Frame(split)
+        split.add(self.pane, weight=4)
+        split.add(low, weight=1)
+        theme.SashGrip(split)
+        self.sugg = ttk.Frame(low)
         self.sugg.pack(fill="x", pady=(8, 0))
 
-        box = ttk.Frame(self)
-        box.pack(fill="x", pady=(8, 0))
+        box = ttk.Frame(low)
+        box.pack(fill="both", expand=True, pady=(8, 0))
         self.ask = tk.Text(box, height=3, wrap="word", font=(theme.TEXT, 11 + theme._S), relief="flat", padx=10,
                            pady=8, borderwidth=1, highlightthickness=1, undo=True)
-        self.ask.pack(side="left", fill="x", expand=True)
+        self.ask.pack(side="left", fill="both", expand=True)
         btns = ttk.Frame(box)
         btns.pack(side="right", fill="y", padx=(8, 0))
         self.send_btn = ttk.Button(btns, text="Send", style="Accent.TButton", command=self.send, width=10)
@@ -321,8 +327,22 @@ class ChatTab(ttk.Frame):
                                        filetypes=[("Documents, audio or video", docs + " " + media),
                                                   ("Documents (TXT, PDF, Word, SRT, VTT)", docs),
                                                   ("Audio & video", media), ("All files", "*.*")])
-        if not f:
+        if f:
+            self.add_path(f)
+
+    def drop(self, paths):
+        """Files dropped on the Chat tab: chat about the first one."""
+        paths = [p for p in paths if Path(p).is_file()]
+        if not paths:
+            self._flash("Drop a document (TXT, PDF, Word …) or an audio / video file to chat about it.")
             return
+        self.add_path(paths[0])
+        if len(paths) > 1:
+            self._flash(self.status.cget("text") + f"  (Only one file at a time: {Path(paths[0]).name} was used.)")
+
+    def add_path(self, f):
+        from .tabs import TranslateTab, read_text_file
+        app = self.app
         p = Path(f)
         if p.suffix.lower() in TranslateTab.TEXT_EXT:
             try:
@@ -396,6 +416,7 @@ class ChatTab(ttk.Frame):
                            highlightcolor=p["accent"], selectbackground=sel, inactiveselectbackground=sel)
         ttk.Style(self).configure("Sugg.TLabel", foreground=p["faint"], font=(UI, 10 + theme._S))
         ttk.Style(self).configure("SuggHot.TLabel", foreground=p["accent"], font=(UI, 10 + theme._S))
+        ttk.Style(self).configure("Source.TLabel", foreground=p["accent"], font=(UI, 11 + theme._S, "bold"))
 
     def _flash(self, msg):
         self.status.configure(text=msg)
@@ -418,15 +439,16 @@ class ChatTab(ttk.Frame):
             self.item = item
             self.redraw()
         if not r:
-            self.src_lbl.configure(text="No transcript yet: transcribe a file on the Transcribe tab, then ask "
-                                        "anything about it here.")
+            self.src_lbl.configure(style="Muted.TLabel", text="No file yet: press 📎 Add file… or drop a document, "
+                                   "audio or video file here, or transcribe one on the Transcribe tab.")
             self._show_sugg([])
             return
         res = r["result"]
         n = len(res.get("speakers") or [])
-        self.src_lbl.configure(text=f"Chatting about: {r['file'].name}  ·  " + (
-            "document" if res.get("no_times") else fmt_hms(res.get('duration') or 0))
-                                    + (f"  ·  {n} speaker{'s' * (n != 1)}" if n else ""))
+        doc = res.get("no_times")
+        self.src_lbl.configure(style="Source.TLabel", text=f"{'📄' if doc else '🎧'}  Chatting about:  {r['file'].name}"
+                               + "   ·   " + ("Document" if doc else fmt_hms(res.get('duration') or 0))
+                               + (f"   ·   {n} speaker{'s' * (n != 1)}" if n else ""))
         st = r.setdefault("chat", {"hist": [], "sugg": None})
         if st["sugg"] is None:
             self._show_sugg(STARTERS)

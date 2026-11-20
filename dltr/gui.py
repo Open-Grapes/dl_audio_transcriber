@@ -81,10 +81,14 @@ class App(BaseTk):
     def __init__(self, files=()):
         super().__init__()
         self.title(f"{APP_NAME} (v{APP_VERSION})")
-        self.geometry("1100x880")
-        self.minsize(860, 640)
         set_icon(self)
         self.s = load_settings()
+        # the look: Fresh Mint (default, sidebar menu) or Legacy (tabs across the top). Fixed until a restart.
+        ui = self.s.get("ui_style")
+        theme.STYLE = ui if ui in theme.THEMES else theme.DEFAULT_THEME
+        self.geometry("1320x900" if theme.mint() else "1100x880")
+        self.minsize(1040 if theme.mint() else 860, 640)
+        self._restarting = False
         self.events = queue.Queue()
         self.rows = {}           # tree item -> {"file", "status", "result", "outputs", "duration", "dirty"}
         self.running = False
@@ -212,25 +216,74 @@ class App(BaseTk):
                 "speakers": self.v_spk.get() and speakers.available(), "num_speakers": self._num_speakers()}
 
     # ------------------------------------------------------------ layout
+    NAV = (("🎙   Transcribe", 0), ("🌐   Translate", 1), ("📝   Summary", 2), ("💬   Chat", 3))
+
+    def _sidebar(self):
+        """Fresh Mint: the tabs and tools in a menu on the left."""
+        side = ttk.Frame(self, style="Side.TFrame", padding=(12, 16, 12, 14), width=220)
+        side.pack(side="left", fill="y")
+        ttk.Frame(self, style="SideLine.TFrame", width=1).pack(side="left", fill="y")
+        brand = ttk.Frame(side, style="Side.TFrame")
+        brand.pack(fill="x", pady=(0, 22), padx=4)
+        ttk.Label(brand, text="🎙", style="Logo.TLabel").pack(side="left")
+        ttk.Label(brand, text=APP_NAME, style="Brand.TLabel").pack(side="left", padx=(10, 0))
+        self.nav = []
+        for text, i in self.NAV:
+            b = ttk.Button(side, text=text, style="Nav.TButton", command=lambda i=i: self.nb.select(i))
+            b.pack(fill="x", pady=2)
+            self.nav.append(b)
+        # tools at the bottom (packed from the bottom up)
+        self.theme_btn = ttk.Button(side, style="Tool.TButton", command=self.toggle_theme)
+        ttk.Button(side, text="🎨   Theme…", style="Tool.TButton", command=self.open_theme).pack(side="bottom", fill="x",
+                                                                                              pady=1)
+        self.theme_btn.pack(side="bottom", fill="x", pady=1)
+        self.update_btn = ttk.Button(side, text="🔄   Check for updates", style="Tool.TButton", command=self.open_updates)
+        self.update_btn.pack(side="bottom", fill="x", pady=1)
+        self.wifi_btn = ttk.Button(side, text="📶   Share via Wi-Fi", style="Tool.TButton", command=self.open_wifi)
+        self.wifi_btn.pack(side="bottom", fill="x", pady=1)
+        ttk.Button(side, text="📦   Models…", style="Tool.TButton", command=self.open_models).pack(side="bottom",
+                                                                                                fill="x", pady=1)
+        ttk.Frame(side, style="SideLine.TFrame", height=1).pack(side="bottom", fill="x", pady=(0, 10))
+
+    def _nav_ui(self):
+        if not getattr(self, "nav", None):
+            return
+        try:
+            cur = self.nb.index("current")
+        except tk.TclError:
+            return
+        for b, (_t, i) in zip(self.nav, self.NAV):
+            b.configure(style="NavOn.TButton" if i == cur else "Nav.TButton")
+
     def _build(self):
-        top = ttk.Frame(self, padding=(12, 10, 12, 0))
+        mint = theme.mint()
+        if mint:
+            self._sidebar()
+        top = ttk.Frame(self, padding=(20, 16, 20, 0) if mint else (12, 10, 12, 0))
         top.pack(fill="x")
-        self.theme_btn = ttk.Button(top, command=self.toggle_theme, width=11)
-        self.theme_btn.pack(side="left", padx=(0, 10))
-        ttk.Label(top, text="Offline transcription — your files never leave this PC", style="Title.TLabel").pack(
+        if not mint:
+            self.theme_btn = ttk.Button(top, command=self.toggle_theme, width=11)
+            self.theme_btn.pack(side="left", padx=(0, 6))
+            ttk.Button(top, text="Theme…", command=self.open_theme).pack(side="left", padx=(0, 10))
+        ttk.Label(top, text="Offline transcription", style="Hero.TLabel" if mint else "Title.TLabel").pack(
             side="left")
         right = ttk.Frame(top)
         right.pack(side="right")
         btns = ttk.Frame(right)
         btns.pack(anchor="e")
-        self.update_btn = ttk.Button(btns, text="Check for updates", command=self.open_updates)
-        self.update_btn.pack(side="right", padx=(10, 0))
-        self.wifi_btn = ttk.Button(btns, text="Share via Wi-Fi", command=self.open_wifi)
-        self.wifi_btn.pack(side="right", padx=(10, 0))
-        ttk.Button(btns, text="Models…", command=self.open_models).pack(side="right")
+        if not mint:
+            self.update_btn = ttk.Button(btns, text="Check for updates", command=self.open_updates)
+            self.update_btn.pack(side="right", padx=(10, 0))
+            self.wifi_btn = ttk.Button(btns, text="Share via Wi-Fi", command=self.open_wifi)
+            self.wifi_btn.pack(side="right", padx=(10, 0))
+            ttk.Button(btns, text="Models…", command=self.open_models).pack(side="right")
         self.stopall_btn = ttk.Button(btns, text="■  Stop all", style="Stop.TButton", command=self.stop_all)
-        self.device_lbl = ttk.Label(right, text="Checking GPU …", style="Muted.TLabel")
-        self.device_lbl.pack(anchor="e", pady=(4, 0))
+        self.device_lbl = ttk.Label(right if not mint else btns, text="Checking GPU …",
+                                    style="Pill.TLabel" if mint else "Muted.TLabel")
+        if mint:
+            self.device_lbl.pack(side="right")
+        else:
+            self.device_lbl.pack(anchor="e", pady=(4, 0))
         self.warn_lbl = ttk.Label(self, style="Warn.TLabel", wraplength=900, justify="left")
         # reminder: files people uploaded over Wi-Fi are still on this PC
         wb = self.wifi_note = ttk.Frame(self, padding=(12, 6, 12, 0))
@@ -242,8 +295,8 @@ class App(BaseTk):
         ttk.Button(wb, text="Open folder", command=self._open_wifi_folder).pack(side="right", padx=6)
 
         # three tabs: Transcribe (the original window), Translate, Summary
-        self.nb = ttk.Notebook(self)
-        self.nb.pack(fill="both", expand=True, padx=8, pady=(8, 0))
+        self.nb = ttk.Notebook(self, style="Side.TNotebook") if mint else ttk.Notebook(self)
+        self.nb.pack(fill="both", expand=True, padx=(10, 8) if mint else 8, pady=(8, 0))
         tab = ttk.Frame(self.nb)
         self.nb.add(tab, text="   Transcribe   ")
         self.tab_tr = tab
@@ -404,6 +457,7 @@ class App(BaseTk):
         self.text.pack(side="left", fill="both", expand=True)
         tsb.pack(side="right", fill="y")
         pane.add(pf, weight=3)
+        theme.SashGrip(pane)
 
         self.text.bind(f"<{MOD}-a>", lambda e: (self.text.tag_add("sel", "1.0", "end"), "break")[1])
         self.text.bind("<Key>", self._edit_guard)
@@ -432,7 +486,13 @@ class App(BaseTk):
         self.names = NameFinder(self)
         self.chat_tab = ChatTab(self.nb, self)
         self.nb.add(self.chat_tab, text="   Chat   ")
-        self.nb.bind("<<NotebookTabChanged>>", lambda e: (self.sum_tab.refresh(), self.chat_tab.refresh()))
+        if DND_FILES:
+            for w in (self.chat_tab, self.chat_tab.pane.text, self.chat_tab.ask):
+                w.drop_target_register(DND_FILES)
+                w.dnd_bind("<<Drop>>", self._on_drop)
+        self.nb.bind("<<NotebookTabChanged>>", lambda e: (self.sum_tab.refresh(), self.chat_tab.refresh(),
+                                                          self._nav_ui()))
+        self._nav_ui()
         from .widgets import copyable
         for lbl in (self.status, self.trans_tab.status, self.sum_tab.status, self.chat_tab.status):
             copyable(lbl, self)
@@ -476,7 +536,10 @@ class App(BaseTk):
 
     def _recolor(self):
         p = self.pal
-        self.theme_btn.configure(text="Light mode" if self.dark else "Dark mode")
+        if theme.mint():
+            self.theme_btn.configure(text="☀   Light mode" if self.dark else "🌙   Dark mode")
+        else:
+            self.theme_btn.configure(text="Light mode" if self.dark else "Dark mode")
         sel = p.get("select", "#cce0ff")
         self.text.configure(bg=p["field"], fg=p["text"], insertbackground=p["text"], highlightbackground=p["line"],
                             highlightcolor=p["accent"], selectbackground=sel, inactiveselectbackground=sel)
@@ -508,6 +571,33 @@ class App(BaseTk):
                              "-foreground", p["text"], "-selectbackground", sel, "-selectforeground", p["text"])
             except tk.TclError:
                 pass
+
+    def open_theme(self):
+        from .theme_win import ThemeWindow
+        ThemeWindow(self)
+
+    def restart(self):
+        """Close the app (asking about unsaved work, like closing it) and open it again."""
+        self._restarting = True
+        if not self._close():
+            self._restarting = False
+
+    def _relaunch(self):
+        import sys
+        env = dict(os.environ)
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"      # a clean start for the new copy of a built app
+        if getattr(sys, "frozen", False):
+            exe = Path(sys.executable).resolve()
+            cmd = ["open", "-n", str(exe.parents[2])] if IS_MAC and exe.parent.name == "MacOS" else [str(exe)]
+            cwd = str(exe.parent)
+        else:
+            cmd, cwd = [sys.executable, "-m", "dltr"], str(Path(__file__).resolve().parents[1])
+        flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP) if IS_WIN else 0
+        try:
+            subprocess.Popen(cmd, cwd=cwd, env=env, close_fds=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+        except Exception as e:
+            log(f"restart failed: {e}")
 
     def toggle_theme(self):
         self.dark = not self.dark
@@ -552,7 +642,11 @@ class App(BaseTk):
 
     # ------------------------------------------------------------ queue
     def _on_drop(self, e):
-        self.add(self.tk.splitlist(e.data))
+        paths = self.tk.splitlist(e.data)
+        if hasattr(self, "chat_tab") and self.nb.select() == str(self.chat_tab):
+            self.chat_tab.drop(paths)            # on the Chat tab: chat about the dropped file
+            return
+        self.add(paths)
 
     def choose_files(self):
         files = filedialog.askopenfilenames(title="Choose audio or video files", filetypes=[
@@ -1333,14 +1427,21 @@ class App(BaseTk):
 
     def set_wifi_badge(self):
         on = self.sharing is not None
+        if theme.mint():
+            self.wifi_btn.configure(text="📶   Wi-Fi sharing: on" if on else "📶   Share via Wi-Fi",
+                                    style="ToolAccent.TButton" if on else "Tool.TButton")
+            return
         self.wifi_btn.configure(text="Wi-Fi sharing: on" if on else "Share via Wi-Fi",
                                 style="Accent.TButton" if on else "TButton")
 
     def set_update_badge(self, version):
+        m = theme.mint()
         if version:
-            self.update_btn.configure(text=f"Update available: {version}", style="Accent.TButton")
+            self.update_btn.configure(text=("⬆   " if m else "") + f"Update available: {version}",
+                                      style="ToolAccent.TButton" if m else "Accent.TButton")
         else:
-            self.update_btn.configure(text="Check for updates", style="TButton")
+            self.update_btn.configure(text=("🔄   " if m else "") + "Check for updates",
+                                      style="Tool.TButton" if m else "TButton")
 
     def _quiet_update_check(self):
         """At most once a day (unless switched off in Check for updates): if GitHub has a newer version, say so on
@@ -1862,15 +1963,16 @@ class App(BaseTk):
     def _close(self):
         if self.editing:
             self.end_edit(True)
+        verb = "restart" if self._restarting else "quit"
         if self.running:
-            if not messagebox.askyesno(APP_NAME, "A transcription is running. Stop it and quit?"):
-                return
+            if not messagebox.askyesno(APP_NAME, f"A transcription is running. Stop it and {verb}?"):
+                return False
         else:
             unsaved = [r for r in self.rows.values() if r.get("result") and r.get("dirty")]
             if unsaved and not messagebox.askyesno(
                     APP_NAME, f"{len(unsaved)} transcript{'s have' if len(unsaved) != 1 else ' has'}n't been "
-                              "exported yet and will be lost.\n\nQuit anyway?"):
-                return
+                              f"exported yet and will be lost.\n\n{verb.capitalize()} anyway?"):
+                return False
         mw = self.models_win
         if mw is not None and mw.wk is not None:
             mw.wk.kill()
@@ -1882,4 +1984,8 @@ class App(BaseTk):
             self.sharing.stop()              # a download in the Models window (resumes next time)
         self.player.close()
         self.wk.close()
+        self._save()
         self.destroy()
+        if self._restarting:
+            self._relaunch()
+        return True

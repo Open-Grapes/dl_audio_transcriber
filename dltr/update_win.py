@@ -73,8 +73,11 @@ class UpdateWindow:
         self.go.pack(side="left")
         self.recheck = ttk.Button(b, text="Check again", command=self.check)
         self.recheck.pack(side="left", padx=6)
+        self.hist_btn = ttk.Button(b, text="Version history", command=self.history)
+        self.hist_btn.pack(side="left")
         ttk.Button(b, text="Release page", command=lambda: webbrowser.open(
-            (self.info or {}).get("page") or updater.RELEASES_PAGE)).pack(side="left")
+            (self.info or {}).get("page") or updater.RELEASES_PAGE)).pack(side="left", padx=6)
+        self._hist = False
         self.close_btn = ttk.Button(b, text="Close", command=self.close)
         self.close_btn.pack(side="right")
 
@@ -158,6 +161,19 @@ class UpdateWindow:
                 t.insert("end", "\n")
         t.configure(state="disabled")
 
+    def history(self):
+        """Toggle the notes box between this release's notes and what changed in every version."""
+        from .changelog import HISTORY
+        self._hist = not self._hist
+        if self._hist:
+            self._set_notes(HISTORY.strip(), title="Version history: what changed in each version")
+            self.hist_btn.configure(text="Latest notes")
+        else:
+            self.hist_btn.configure(text="Version history")
+            info = self.info or {}
+            self._set_notes((info.get("notes") or "").strip() or "No release notes.",
+                            title=f"What's new in {info['version']}:" if info else None)
+
     def _app_newer(self):
         return bool(self.info and updater.is_newer(self.info["version"]))
 
@@ -207,6 +223,8 @@ class UpdateWindow:
 
     def _show_app(self, info, err):
         self.info, self.app_err = info, err
+        self._hist = False
+        self.hist_btn.configure(text="Version history")
         if err:
             self._headline("Couldn't check for updates", "bad")
             self.sub.configure(text=err)

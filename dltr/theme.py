@@ -1,4 +1,9 @@
-"""Light and dark looks for the window (ttk). Light uses the native Windows style; dark uses 'clam' recoloured."""
+"""The app's looks ("themes"), each in light and dark.
+
+Legacy: light uses the native Windows / Mac style, dark uses 'clam' recoloured (the look up to 1.7).
+Fresh Mint (the default from 1.8): soft mint colours, flat buttons and a sidebar menu, light or dark.
+The theme is chosen at start-up (it changes the layout), so switching it restarts the app; light / dark
+switches straight away."""
 
 import ctypes
 import os
@@ -29,7 +34,35 @@ DARK = {
 }
 
 
+MINT_LIGHT = {
+    "dark": False, "bg": "#f1f6f4", "panel": "#e7f0ec", "field": "#ffffff", "card": "#ffffff", "text": "#1d2b28",
+    "muted": "#677a75", "faint": "#98a8a3", "line": "#d5e2dd", "accent": "#0f9f7b", "accent2": "#e2f6ef",
+    "accent_hi": "#14b88f", "accent_lo": "#0b8667", "accent_fg": "#0b6b53", "hover": "#dcebe5",
+    "pressed": "#cfe4dc", "select": "#bfe8da", "thumb": "#c3d3cd", "thumb_hi": "#a8bdb5", "grip": "#7f9690",
+    "sash": "#dfe9e5", "coral": "#c4542f", "coral_bg": "#ffe6dc",
+    "tags": {"RUN": "#2f5bd3", "DONE": "#0b8667", "FAIL": "#c62828", "WAIT": "#677a75", "SKIP": "#677a75"},
+}
+MINT_DARK = {
+    "dark": True, "bg": "#131817", "panel": "#1f2725", "field": "#1b2120", "card": "#1b2120", "text": "#e6ecea",
+    "muted": "#a0aeaa", "faint": "#7d8c88", "line": "#2f3a37", "accent": "#3fd0a8", "accent2": "#1d3a32",
+    "accent_hi": "#5fdcb8", "accent_lo": "#2fb592", "accent_fg": "#7fe6c8", "hover": "#26302e",
+    "pressed": "#2d3936", "select": "#24534a", "thumb": "#3a4643", "thumb_hi": "#4c5a56", "grip": "#e6ecea",
+    "sash": "#1b2120", "coral": "#ffb59c", "coral_bg": "#4a2a20",
+    "tags": {"RUN": "#7aa6ff", "DONE": "#5fdcb8", "FAIL": "#ff7b72", "WAIT": "#a0aeaa", "SKIP": "#a0aeaa"},
+}
+
+THEMES = {"mint": "Fresh Mint", "legacy": "Legacy"}     # key -> name shown in the Theme window
+DEFAULT_THEME = "mint"
+STYLE = DEFAULT_THEME                                    # set once at start-up (gui.App)
+
+
+def mint():
+    return STYLE == "mint"
+
+
 def palette(dark):
+    if mint():
+        return MINT_DARK if dark else MINT_LIGHT
     return DARK if dark else LIGHT
 
 
@@ -37,15 +70,16 @@ def apply(root, dark):
     """Restyle every ttk widget under root. Returns the palette used."""
     p = palette(dark)
     style = ttk.Style(root)
-    if dark:
+    if dark or mint():
         style.theme_use("clam")
         bg, panel, field, text, line = p["bg"], p["panel"], p["field"], p["text"], p["line"]
         style.configure(".", background=bg, foreground=text, fieldbackground=field, bordercolor=line,
                         darkcolor=bg, lightcolor=bg, troughcolor=panel, focuscolor=p["accent"],
                         selectbackground=p["select"], selectforeground=text, insertcolor=text,
-                        font=(UI, 9 + _S))
+                        font=(UI, (10 if mint() else 9) + _S))
         style.map(".", foreground=[("disabled", p["faint"])])
-        style.configure("TButton", background=panel, bordercolor=line, padding=(10, 4), relief="flat")
+        style.configure("TButton", background=panel, bordercolor=panel if mint() else line,
+                        padding=(12, 6) if mint() else (10, 4), relief="flat")
         style.map("TButton", background=[("pressed", p["pressed"]), ("active", p["hover"]), ("disabled", bg)],
                   bordercolor=[("focus", p["accent"])])
         style.configure("Toolbutton", background=bg, padding=(10, 4), relief="flat")
@@ -68,12 +102,11 @@ def apply(root, dark):
         # clam's scrollbar arrows look odd in dark mode: just a plain thumb, like modern Windows apps
         style.layout("Vertical.TScrollbar", [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
             ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
-        thumb = "#4a4e58"
+        thumb, hi = p.get("thumb", "#4a4e58"), p.get("thumb_hi", "#5d626e")
         style.configure("Vertical.TScrollbar", background=thumb, troughcolor=bg, bordercolor=bg,
                         lightcolor=thumb, darkcolor=thumb, gripcount=0, relief="flat", arrowsize=10)
-        style.map("Vertical.TScrollbar", background=[("active", "#5d626e"), ("pressed", "#6b7180")],
-                  lightcolor=[("active", "#5d626e"), ("pressed", "#6b7180")],
-                  darkcolor=[("active", "#5d626e"), ("pressed", "#6b7180")])
+        style.map("Vertical.TScrollbar", background=[("active", hi), ("pressed", hi)],
+                  lightcolor=[("active", hi), ("pressed", hi)], darkcolor=[("active", hi), ("pressed", hi)])
         # read-only comboboxes default to a light grey field in 'clam', which made the Model box look washed out
         style.configure("TCombobox", fieldbackground=field, background=panel, foreground=text, arrowcolor=text,
                         bordercolor=line, selectbackground=field, selectforeground=text, padding=(6, 3))
@@ -86,10 +119,13 @@ def apply(root, dark):
         style.map("TEntry", bordercolor=[("focus", p["accent"])])
         style.configure("Horizontal.TScale", background=p["accent"], troughcolor=panel, bordercolor=line,
                         lightcolor=panel, darkcolor=panel, gripcount=0, sliderlength=12)
-        style.map("Horizontal.TScale", background=[("active", "#60a5fa")])
-        style.configure("Accent.TButton", background=p["accent"], foreground="#ffffff", bordercolor=p["accent"])
-        style.map("Accent.TButton", background=[("pressed", "#2563eb"), ("active", "#4f8ff7"),
-                                                ("disabled", panel)],
+        style.map("Horizontal.TScale", background=[("active", p.get("accent_hi", "#60a5fa"))])
+        on_accent = "#0b201b" if (mint() and dark) else "#ffffff"
+        style.configure("Accent.TButton", background=p["accent"], foreground=on_accent, bordercolor=p["accent"])
+        if mint():
+            style.configure("Accent.TButton", font=(UI, 10 + _S, "bold"))
+        style.map("Accent.TButton", background=[("pressed", p.get("accent_lo", "#2563eb")),
+                                                ("active", p.get("accent_hi", "#4f8ff7")), ("disabled", panel)],
                   foreground=[("disabled", p["faint"])])
         style.configure("TProgressbar", background=p["accent"], troughcolor=panel, bordercolor=line)
         style.configure("TNotebook", background=bg, bordercolor=line, lightcolor=bg, darkcolor=bg,
@@ -100,6 +136,8 @@ def apply(root, dark):
                   foreground=[("selected", text)], lightcolor=[("selected", bg)],
                   expand=[("selected", (0, 2, 0, 0))])
         style.configure("Drop.TLabel", background=panel, bordercolor=line)
+        if mint():
+            _mint_extras(style, p, dark)
     else:
         # ttk keeps settings per theme, so the dark colours above don't leak into the native look.
         names = style.theme_names()
@@ -108,15 +146,20 @@ def apply(root, dark):
     style.configure("Muted.TLabel", foreground=p["muted"])
     style.configure("Small.TLabel", foreground=p["faint"], font=(UI, 8 + _S))
     style.configure("Title.TLabel", font=(UI, 11 + _S, "bold"))
-    style.configure("Treeview", rowheight=26)
+    style.configure("Treeview", rowheight=30 if mint() else 26)
     style.configure("Time.TLabel", font=(MONO, 9 + _S), foreground=p["muted"])
     icon_font = "Segoe MDL2 Assets" if IS_WIN else UI
     style.configure("Play.TButton", font=(icon_font, 12 + _S), padding=(10, 4), width=3)
-    if dark:
+    if mint():
+        style.configure("Stop.TButton", background=p["coral_bg"], foreground=p["coral"], bordercolor=p["coral_bg"],
+                        font=(UI, 10 + _S, "bold"))
+        style.map("Stop.TButton", background=[("pressed", p["coral_bg"]), ("active", p["coral_bg"])])
+    elif dark:
         style.configure("Stop.TButton", background="#dc2626", foreground="#ffffff", bordercolor="#dc2626")
         style.map("Stop.TButton", background=[("pressed", "#b91c1c"), ("active", "#ef4444")])
     else:
         style.configure("Stop.TButton", foreground="#c62828", font=(UI, 9 + _S, "bold"))
+    _sash(style, p, dark)
     # the drop-down list of a combobox is a plain Tk listbox
     for k, v in (("background", p["field"] if dark else "#ffffff"), ("foreground", p["text"]),
                  ("selectBackground", p.get("select", "#cce0ff") if dark else "#cce0ff"),
@@ -130,6 +173,102 @@ def apply(root, dark):
             pass
         title_bar(w, dark)
     return p
+
+
+def _sash(style, p, dark):
+    """The divider you drag between two boxes: a clear grip (light in dark mode) so it's easy to find."""
+    grip = p.get("grip") or ("#e6e7ea" if dark else "#6b7280")
+    bar = p.get("sash") or (p["panel"] if dark else "#e3e6ea")
+    try:
+        style.configure("Sash", sashthickness=10, gripcount=24, background=bar, lightcolor=grip,
+                        darkcolor=grip, bordercolor=grip, sashrelief="flat")
+    except tk.TclError:
+        pass
+    # the native Windows / Mac look ('vista', 'aqua') draws no grip whatever the style says: draw our own
+    native = style.theme_use() != "clam"
+    for g in list(_GRIPS):
+        g.show(native, grip)
+
+
+_GRIPS = []
+
+
+class SashGrip:
+    """A small handle drawn on the divider of a vertical ttk.PanedWindow (first divider) when the native look
+    wouldn't show one. It can be dragged like the divider itself."""
+
+    def __init__(self, pw):
+        self.pw = pw
+        self.on = False
+        self.f = tk.Frame(pw, width=64, height=4, cursor="sb_v_double_arrow", bg="#6b7280")
+        self.f.bind("<B1-Motion>", self._drag)
+        for ev in ("<Configure>", "<ButtonRelease-1>", "<B1-Motion>"):
+            pw.bind(ev, lambda e: pw.after_idle(self.place), add="+")
+        _GRIPS.append(self)
+        pw.bind("<Destroy>", lambda e: self in _GRIPS and e.widget is pw and _GRIPS.remove(self), add="+")
+        st = ttk.Style(pw)
+        self.show(st.theme_use() != "clam", st.lookup("Sash", "lightcolor") or "#6b7280")
+
+    def show(self, on, colour):
+        self.on = on
+        try:
+            self.f.configure(bg=colour)
+            self.place()
+        except tk.TclError:
+            pass
+
+    def place(self):
+        try:
+            if not self.on or len(self.pw.panes()) < 2:
+                self.f.place_forget()
+                return
+            y = self.pw.sashpos(0)
+            self.f.place(relx=0.5, y=y + 5, anchor="center")
+            self.f.lift()
+        except tk.TclError:
+            pass
+
+    def _drag(self, e):
+        try:
+            self.pw.sashpos(0, max(40, e.y_root - self.pw.winfo_rooty()))
+            self.place()
+        except tk.TclError:
+            pass
+
+
+def _mint_extras(style, p, dark):
+    """Fresh Mint: the sidebar menu, cards and soft accent chips."""
+    bg, card, text = p["bg"], p["card"], p["text"]
+    # the tabs are in the sidebar menu, so the notebook's own tab row is hidden
+    style.layout("Side.TNotebook.Tab", [])
+    style.configure("Side.TNotebook", background=bg, borderwidth=0, bordercolor=bg, lightcolor=bg, darkcolor=bg,
+                    tabmargins=0)
+    style.configure("Side.TFrame", background=card)
+    style.configure("SideLine.TFrame", background=p["line"])
+    style.configure("Side.TLabel", background=card, foreground=p["muted"])
+    style.configure("Brand.TLabel", background=card, foreground=text, font=(UI, 14 + _S, "bold"))
+    style.configure("Logo.TLabel", background=p["accent"], foreground="#ffffff", font=(UI, 13 + _S, "bold"),
+                    padding=(8, 3), anchor="center")
+    style.configure("SideHead.TLabel", background=card, foreground=p["faint"], font=(UI, 8 + _S, "bold"))
+    for name, fg, bgc, font in (("Nav", p["muted"], card, (UI, 11 + _S, "bold")),
+                                ("NavOn", p["accent_fg"], p["accent2"], (UI, 11 + _S, "bold")),
+                                ("Tool", p["muted"], card, (UI, 10 + _S))):
+        style.configure(f"{name}.TButton", background=bgc, foreground=fg, bordercolor=bgc, lightcolor=bgc,
+                        darkcolor=bgc, anchor="w", padding=(14, 7) if name == "Tool" else (14, 9), font=font)
+        style.map(f"{name}.TButton",
+                  background=[("pressed", p["pressed"]), ("active", p["accent2"] if name == "NavOn" else p["hover"])],
+                  bordercolor=[("focus", bgc)], foreground=[("active", p["accent_fg"] if name == "NavOn" else text)])
+    style.configure("ToolAccent.TButton", background=p["accent"], foreground="#0b201b" if dark else "#ffffff",
+                    bordercolor=p["accent"], anchor="w", padding=(14, 7), font=(UI, 10 + _S, "bold"))
+    style.map("ToolAccent.TButton", background=[("active", p["accent_hi"]), ("pressed", p["accent_lo"])])
+    style.configure("Pill.TLabel", background=p["accent2"], foreground=p["accent_fg"], padding=(12, 4),
+                    font=(UI, 9 + _S, "bold"))
+    style.configure("Hero.TLabel", font=(UI, 17 + _S, "bold"), foreground=text)
+    style.configure("Drop.TLabel", background=p["accent2"], bordercolor=p["accent"], lightcolor=p["accent2"],
+                    darkcolor=p["accent2"])
+    style.configure("Treeview.Heading", font=(UI, 9 + _S, "bold"), foreground=p["faint"], padding=(6, 6))
+    style.configure("TProgressbar", background=p["accent"], troughcolor=p["accent2"], bordercolor=p["accent2"],
+                    lightcolor=p["accent"], darkcolor=p["accent"], thickness=10)
 
 
 def _toplevels(root):
