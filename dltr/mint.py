@@ -16,6 +16,13 @@ import tkinter as tk
 
 IS_WIN, IS_MAC = os.name == "nt", sys.platform == "darwin"
 FONT, FONT_X = "Nunito", "Nunito ExtraBold"
+
+
+def heading(size, ui=None):
+    """Font for headings: Nunito ExtraBold on Windows; on the Mac that family name isn't found, so Nunito Bold."""
+    if not _fonts_ok:
+        return (ui or "Segoe UI", size, "bold")
+    return (FONT, size, "bold") if IS_MAC else (FONT_X, size)
 _fonts_ok = None
 
 
@@ -414,17 +421,16 @@ def configure(style, p, dark, ui, size_s):
     style.configure("TLabel", background=card, foreground=text)
     style.configure("Page.TLabel", background=page, foreground=text)
     style.configure("PageMuted.TLabel", background=page, foreground=muted)
-    style.configure("Hero.TLabel", background=page, foreground=text, font=(FONT_X if _fonts_ok else ui, 18 + size_s))
+    style.configure("Hero.TLabel", background=page, foreground=text, font=heading(18 + size_s, ui))
     style.configure("Card.TFrame", background=card)
     style.configure("Side.TFrame", background=card)
     style.configure("SideLine.TFrame", background=p["line"])
     style.configure("Line.TFrame", background=p["line"])
     style.configure("Side.TLabel", background=card, foreground=muted)
-    style.configure("Brand.TLabel", background=card, foreground=text, font=(FONT_X if _fonts_ok else ui, 14 + size_s))
+    style.configure("Brand.TLabel", background=card, foreground=text, font=heading(14 + size_s, ui))
     style.configure("Logo.TLabel", background=card)
     style.configure("Badge.TLabel", background=page)
-    style.configure("Title.TLabel", background=card, foreground=text, font=(FONT_X if _fonts_ok else ui,
-                                                                             12 + size_s))
+    style.configure("Title.TLabel", background=card, foreground=text, font=heading(12 + size_s, ui))
     style.configure("Head.TLabel", background=card, foreground=muted, font=F(9, "bold"))
     style.configure("Status.TLabel", background=card, foreground=text, font=F(10, "bold"))
     style.configure("Pill.TLabel", foreground=p["accent_fg"], padding=(12, 4), font=F(9, "bold"))
@@ -496,8 +502,8 @@ class DropZone(tk.Canvas):
         self.configure(bg=p["bg"])
         self._rr(2, 2, w - 3, h - 3, 18, fill=p["drop_hot"] if self.hot else p["drop"], outline=p["drop_line"],
                  width=2, dash=(7, 5))
-        ui = FONT if _fonts_ok else "Segoe UI"
-        bold = FONT_X if _fonts_ok else ui
+        from .theme import _S
+        ui = FONT if _fonts_ok else ("Segoe UI" if IS_WIN else "Helvetica Neue")
         cy = h / 2 - 62
         s = 58
         self._rr(w / 2 - s / 2, cy - s / 2, w / 2 + s / 2, cy + s / 2, 16, fill=p["accent"], outline=p["accent"])
@@ -505,13 +511,13 @@ class DropZone(tk.Canvas):
         if ic is not None:
             self.create_image(w / 2, cy, image=ic)
         else:
-            self.create_text(w / 2, cy, text="⬆", fill="#ffffff", font=(ui, 20))
+            self.create_text(w / 2, cy, text="⬆", fill="#ffffff", font=(ui, 20 + _S))
         self.create_text(w / 2, cy + 52, text="Drop audio or video files / folders here", fill=p["text"],
-                         font=(bold, 12))
-        self.create_text(w / 2, cy + 76, text="or click to browse  ·  no length limit", fill=p["muted"], font=(ui, 10))
+                         font=heading(12 + _S, ui))
+        self.create_text(w / 2, cy + 76, text="or click to browse  ·  no length limit", fill=p["muted"], font=(ui, 10 + _S))
         # file-type chips, wrapped onto lines that fit
         import tkinter.font as tkfont
-        f = tkfont.Font(family=ui, size=9)
+        f = tkfont.Font(family=ui, size=9 + _S)
         chips = [(t, f.measure(t) + 22) for t in self.TYPES]
         lines, cur, cw = [], [], 0
         for t, cwid in chips:
@@ -527,7 +533,7 @@ class DropZone(tk.Canvas):
             x = w / 2 - tot / 2
             for t, cwid in ln:
                 self._rr(x, y - 12, x + cwid, y + 12, 12, fill=p["card"], outline=p["line"])
-                self.create_text(x + cwid / 2, y, text=t, fill=p["muted"], font=(ui, 9))
+                self.create_text(x + cwid / 2, y, text=t, fill=p["muted"], font=(ui, 9 + _S))
                 x += cwid + 6
             y += 30
         # a little sound wave
