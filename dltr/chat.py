@@ -4,6 +4,7 @@ automatic speaker naming after a transcription (only names the recording actuall
 
 import re
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk
 
 from . import engine, models, theme
@@ -39,7 +40,8 @@ def build_ctx(app, r):
     names = res.get("speakers") or []
     item = item_of(app, r)
     ctx = {"title": r["file"].name,
-           "lines": [[s["start"], engine.speaker_name(res, s) or "", s["text"]] for s in res["segments"]],
+           "lines": [[None if res.get("no_times") else s["start"], engine.speaker_name(res, s) or "", s["text"]]
+                     for s in res["segments"]],
            "speakers": [{"name": n, "voice": engine.voice_of(res, i)} for i, n in enumerate(names)],
            "summary": None, "translation": None}
     st = getattr(app, "sum_tab", None)
@@ -55,6 +57,14 @@ def build_ctx(app, r):
 class NameFinder:
     """After a transcription with speakers: if the AI model is on this PC, ask it for the speakers' real names
     and use them, but only names the recording says ("I'm Sarah"). Runs when the AI worker is free."""
+    ai_label = "speaker naming"
+
+    def ai_cancelled(self):
+        """Something the user started needed the AI: try this recording again once it's free."""
+        if self.cur is not None and self.cur not in self.todo:
+            self.todo.insert(0, self.cur)
+        self.cur = None
+        self.app.after(3000, self._next)
 
     def __init__(self, app):
         self.app = app
@@ -216,6 +226,11 @@ class SpeakersWindow:
 
 # ============================================================================ Chat tab
 class ChatTab(ttk.Frame):
+    ai_label = "Chat"
+
+    def ai_cancelled(self):
+        self._sugg_for = None            # the suggestions were dropped to make room; fine
+
     def __init__(self, nb, app):
         super().__init__(nb, padding=(12, 10, 12, 12))
         self.app = app
@@ -233,6 +248,8 @@ class ChatTab(ttk.Frame):
         self.src_lbl.pack(side="left", fill="x", expand=True)
         ttk.Button(top, text="New chat", command=self.new_chat).pack(side="right")
         ttk.Button(top, text="Speakers…", command=self.speakers).pack(side="right", padx=6)
+        ttk.Button(top, text="📎  Add file…", command=self.add_file).pack(side="right")
+        self._await = None             # a recording added here that's being transcribed
 
         self.pane = _Pane(self, app, "Chat")
         self.pane.pack(fill="both", expand=True)
@@ -259,6 +276,9 @@ class ChatTab(ttk.Frame):
         self.mic_btn.pack(fill="x", pady=(6, 0))
         self.mic_pick = ttk.Button(btns, text="Mic ▾", command=self._mic_menu, width=10)
         self.mic_pick.pack(fill="x", pady=(4, 0))
+        self._ph = False
+        self.ask.bind("<FocusIn>", lambda e: self._ph_hide())
+        self.ask.bind("<FocusOut>", lambda e: self._ph_show())
         self.ask.bind("<Return>", lambda e: (self.send(), "break")[1])
         self.ask.bind("<Shift-Return>", lambda e: None)
         self.ask.bind("<KP_Enter>", lambda e: (self.send(), "break")[1])
@@ -270,7 +290,93 @@ class ChatTab(ttk.Frame):
         self.status = ttk.Label(self, style="Muted.TLabel", wraplength=900, justify="left")
         self.status.pack(fill="x", pady=(6, 0))
         self.status.bind("<Configure>", lambda e: self.status.configure(wraplength=max(e.width - 4, 100)))
+        self._ph_show()
         self.refresh()
+
+    # ------------------------------------------------------------ the hint in the empty question box
+    PH = "Ask anything about the recording or document …   (Enter sends · Shift+Enter for a new line · 🎤 Speak to say it)"
+
+    def _ph_show(self):
+        if not self._ph and not self.ask.get("1.0", "end").strip() and self.focus_get() is not self.ask:
+            self.ask.insert("1.0", self.PH, ("ph",))
+            self._ph = True
+
+    def _ph_hide(self):
+        if self._ph:
+            self.ask.delete("1.0", "end")
+            self._ph = False
+
+    def _question(self):
+        return "" if self._ph else self.ask.get("1.0", "end")
+
+    # ------------------------------------------------------------ add a file to chat about
+    def add_file(self):
+        from tkinter import filedialog
+        from .common import MEDIA_EXT
+        from .tabs import TranslateTab, read_text_file
+        app = self.app
+        docs = " ".join(f"*{x}" for x in TranslateTab.TEXT_EXT)
+        media = " ".join(f"*.{x}" for x in sorted(MEDIA_EXT))
+        f = filedialog.askopenfilename(parent=app, title="Add a document, audio or video file to chat about",
+                                       filetypes=[("Documents, audio or video", docs + " " + media),
+                                                  ("Documents (TXT, PDF, Word, SRT, VTT)", docs),
+                                                  ("Audio & video", media), ("All files", "*.*")])
+        if not f:
+            return
+        p = Path(f)
+        if p.suffix.lower() in TranslateTab.TEXT_EXT:
+            try:
+                text = read_text_file(p)
+            except Exception as e:
+                self._flash(f"Couldn't read {p.name}: {e}")
+                return
+            if not text.strip():
+                self._flash(f"{p.name} has no text in it.")
+                return
+            item = app.add_doc(p, text)
+            self._switch_to(item)
+            self._flash(f"Added {p.name}. Ask anything about it.")
+            return
+        item = next((i for i, r in app.rows.items() if Path(r["file"]) == p), None)
+        if item is None:
+            app.add([str(p)])
+            item = next((i for i, r in app.rows.items() if Path(r["file"]) == p), None)
+            if item is None:
+                self._flash(f"{p.name} isn't a file this app can read.")
+                return
+        r = app.rows[item]
+        if r.get("result") and r["status"] == "DONE":
+            self._switch_to(item)
+            return
+        self._await = item
+        app.tree.selection_set(item)
+        if r["status"] in ("FAIL", "SKIP"):
+            app._set_status(item, "WAIT")
+        if not app.running:
+            app.start()
+        self.src_lbl.configure(text=f"Transcribing {p.name} … (you can ask about it as soon as it's done)")
+        self._flash(f"Transcribing {p.name} first, then it's ready to chat about.")
+
+    def _switch_to(self, item):
+        app = self.app
+        if app.editing:
+            app.end_edit(True)
+        app.tree.selection_set(item)
+        app.tree.see(item)
+        app._preview(item)
+        self.refresh()
+        self.ask.focus_set()
+
+    def on_transcribed(self, item, ok=True):
+        if item != self._await:
+            return
+        self._await = None
+        if ok:
+            self._switch_to(item)
+            self._flash(f"{self.app.rows[item]['file'].name} is transcribed. Ask anything about it.")
+        else:
+            self._flash("The transcription didn't finish (see the Transcribe tab).")
+            self.refresh()
 
     # ------------------------------------------------------------ look
     def recolor(self, p, dark):
@@ -284,6 +390,7 @@ class ChatTab(ttk.Frame):
         t.tag_configure("b", font=(theme.TEXT, 11 + theme._S, "bold"))
         t.tag_configure("time", foreground=p["accent"], underline=True)
         t.tag_configure("think", foreground=p["faint"])
+        self.ask.tag_configure("ph", foreground=p["faint"])
         sel = p.get("select", "#cce0ff")
         self.ask.configure(bg=p["field"], fg=p["text"], insertbackground=p["text"], highlightbackground=p["line"],
                            highlightcolor=p["accent"], selectbackground=sel, inactiveselectbackground=sel)
@@ -317,7 +424,8 @@ class ChatTab(ttk.Frame):
             return
         res = r["result"]
         n = len(res.get("speakers") or [])
-        self.src_lbl.configure(text=f"Chatting about: {r['file'].name}  ·  {fmt_hms(res.get('duration') or 0)}"
+        self.src_lbl.configure(text=f"Chatting about: {r['file'].name}  ·  " + (
+            "document" if res.get("no_times") else fmt_hms(res.get('duration') or 0))
                                     + (f"  ·  {n} speaker{'s' * (n != 1)}" if n else ""))
         st = r.setdefault("chat", {"hist": [], "sugg": None})
         if st["sugg"] is None:
@@ -444,7 +552,7 @@ class ChatTab(ttk.Frame):
         if self.rec is not None:
             self._mic_stop()
             return
-        q = (q if q is not None else self.ask.get("1.0", "end")).strip()
+        q = (q if q is not None else self._question()).strip()
         if not q:
             return
         item, r = self._row()
@@ -454,8 +562,8 @@ class ChatTab(ttk.Frame):
         if item != self.item:
             self.item = item
             self.redraw()
-        if app.ai.busy() and app.ai.owner is not self:
-            self._flash("The AI is busy (Translate, Summary or naming speakers); try again when it's done.")
+        if not app.ai.free_for(self):
+            self._flash(f"The {app.ai.label()} tab is still using the AI; nothing asked.")
             return
         from . import ai
         need = ensure_models(app, [ai.AI_KEY], "Chat")
@@ -554,6 +662,7 @@ class ChatTab(ttk.Frame):
             text = a[1]
             self.mic_btn.configure(text="🎤  Speak", state="normal")
             if text:
+                self._ph_hide()
                 cur = self.ask.get("1.0", "end").strip()
                 self.ask.insert("end", (" " if cur else "") + text)
                 self.ask.focus_set()
@@ -694,9 +803,9 @@ class ChatTab(ttk.Frame):
             self._flash("That was too short. Press 🎤 Speak and talk for a moment.")
             return
         app = self.app
-        if app.ai.busy() and app.ai.owner is not self:
+        if not app.ai.free_for(self):
             self.mic_btn.configure(text="🎤  Speak")
-            self._flash("The AI is busy; try again in a moment.")
+            self._flash(f"The {app.ai.label()} tab is still using the AI; try again in a moment.")
             return
         if app.ai.owner is self:
             app.ai.stop()

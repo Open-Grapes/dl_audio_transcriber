@@ -212,8 +212,41 @@ def selftest_chat(src, out):
     return 0 if "error" not in res else 1
 
 
+def selftest_voice(out, langs_="zho_Hans,zsm_Latn"):
+    """--selftest-voice OUT.json [LANGS]: pinyin, and reading a sentence aloud in each language (downloads the
+    voices if needed). Used to check a built app."""
+    import json
+    import tempfile
+    import time
+    from pathlib import Path
+    from . import pinyin, tts
+    res = {}
+    try:
+        res["pinyin"] = pinyin.line("保护自己，远离Ah Choo。现在就接种流感疫苗。")
+        say = {"zho_Hans": ["你可能很注重卫生，", "现在就接种流感疫苗。"], "eng_Latn": ["Book your flu vaccination now."],
+               "zsm_Latn": ["Tempah vaksinasi flu anda sekarang."], "tam_Taml": ["வணக்கம், இது ஒரு சோதனை."]}
+        tmp = Path(tempfile.mkdtemp())
+        for code in langs_.split(","):
+            t = time.time()
+            vid = None
+            if ":" in code:                       # LANG:VOICE_ID picks a voice
+                code, vid = code.split(":", 1)
+            info = tts.synthesize(say.get(code, ["Hello."]), code, voice=vid, out=tmp / f"{code}.wav")
+            res[code] = {"times": info["times"], "duration": info["duration"], "voice": info["voice"],
+                         "secs": round(time.time() - t, 1), "bytes": (tmp / f"{code}.wav").stat().st_size,
+                         "name": info["voice_name"]}
+    except Exception as e:
+        import traceback
+        res["error"] = f"{e!r}\n{traceback.format_exc()}"
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(res, fh, ensure_ascii=False, indent=1)
+    return 0 if "error" not in res else 1
+
+
 def main():
     args = sys.argv[1:]
+    if args[:1] == ["--selftest-voice"] and len(args) in (2, 3):
+        return selftest_voice(*args[1:])
     if args[:1] == ["--wifi"]:
         return wifi(*args[1:3])
     if args[:1] == ["--selftest-ai"] and len(args) in (2, 3):

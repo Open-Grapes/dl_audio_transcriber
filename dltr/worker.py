@@ -71,6 +71,13 @@ def _main(jobs, out, force_cpu):
                 from . import ai
                 out.put(("names", jid, ai.find_names(job["ctx"])))
                 continue
+            if kind == "tts":
+                from . import tts
+                info = tts.synthesize(job["texts"], job["lang"], voice=job.get("voice"), out=job["out"],
+                                      gender=job.get("gender", "female"),
+                                      progress=lambda f, t: out.put(("prog", jid, f, t)))
+                out.put(("voiced", jid, dict(info, out=job["out"]), time.time() - t0))
+                continue
             if kind == "dictate":
                 out.put(("prog", jid, 0.3, "Turning your voice into text …"))
                 out.put(("dictated", jid, engine.dictate(job["audio"], job["model"], job.get("lang"))))
@@ -151,6 +158,7 @@ class Worker:
                 return
             if gen != self._gen:
                 return
-            if msg[0] in ("done", "fail", "downloaded", "tdone", "sdone", "cdone", "sugg", "names", "dictated"):
+            if msg[0] in ("done", "fail", "downloaded", "tdone", "sdone", "cdone", "sugg", "names", "dictated",
+                          "voiced"):
                 self.busy_id = None
             self.on_event(*msg)

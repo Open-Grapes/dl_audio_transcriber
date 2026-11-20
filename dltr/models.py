@@ -30,7 +30,36 @@ EXTRA = {
     "nllb-3.3b": ("NLLB-200 3.3B translator (200 languages)", 3380, "Translation", "CC-BY-NC-4.0"),
     "nllb-1.3b": ("NLLB-200 1.3B translator (faster)", 1400, "Translation", "CC-BY-NC-4.0"),
 }
-ALL = list(MODELS) + list(EXTRA)
+# Read-aloud voices (Translate tab): always listed; any other voice appears once it's downloaded (all_keys).
+# Folder = MODELS_DIR / key; the details come from tts.py.
+VOICES = ["tts-kokoro", "tts-ms-yasmin", "tts-ms-osman", "tts-ms-multi", "tts-mms-tam"]
+ALL = list(MODELS) + list(EXTRA) + VOICES
+
+
+def is_voice(key):
+    return key.startswith("tts-")
+
+
+def voice_main_file(key):
+    from . import tts
+    return tts.main_file(key)
+
+
+def all_keys():
+    """Every model in the list, plus any other read-aloud voice that's been downloaded."""
+    more = []
+    try:
+        more = sorted(d.name for d in MODELS_DIR.glob("tts-*") if d.is_dir() and d.name not in VOICES
+                      and installed(d.name))
+    except OSError:
+        pass
+    return ALL + more
+
+
+def voice_label(key):
+    from . import tts
+    return tts.label_key(key)
+
 
 # key -> (speed, accuracy, what it's for)
 INFO = {
@@ -56,17 +85,55 @@ INFO = {
     "nllb-1.3b": ("Faster", "Very good", "Smaller NLLB-200: same 200 languages, about twice as fast, slightly "
                                          "less accurate. Free for non-commercial use."),
 }
+VOICE_INFO = {
+    "tts-kokoro": ("Fast", "Natural", "Kokoro: native-sounding Mandarin (55 female, 45 male speakers) and English "
+                                      "voices for 🔊 Read aloud. Apache-2.0."),
+    "tts-ms-yasmin": ("Very fast", "Natural", "Yasmin: female Malaysian voice for 🔊 Read aloud (mesolitica)."),
+    "tts-ms-osman": ("Very fast", "Natural", "Osman: male Malaysian voice for 🔊 Read aloud (mesolitica)."),
+    "tts-ms-multi": ("Very fast", "Natural", "Idayu (female) and Husein (male): Malaysian voices for 🔊 Read aloud "
+                                             "(mesolitica)."),
+    "tts-espeak": ("", "", "Pronunciation data that the Piper voices share (espeak-ng, GPL-3.0)."),
+}
+
+
+def info(key):
+    if key in INFO:
+        return INFO[key]
+    if key in VOICE_INFO:
+        return VOICE_INFO[key]
+    if key.startswith("tts-mms-"):
+        return ("Very fast", "Fair", f"{voice_label(key)} for 🔊 Read aloud: one voice, clear but robotic. "
+                                     "Free for non-commercial use (CC-BY-NC-4.0).")
+    if key.startswith("tts-piper-"):
+        return ("Very fast", "Good", f"{voice_label(key)} for 🔊 Read aloud: a native speaker. The licence is in "
+                                     "the voice's MODEL_CARD (in its folder).")
+    return ("", "", voice_label(key))
+
+
+def repo_of(key):
+    if is_voice(key):
+        from . import tts
+        return tts.repo_of_key(key) or "mesolitica"
+    return REPOS[key]
 
 
 def kind(key):
+    if is_voice(key):
+        return "Read aloud"
     return EXTRA[key][2] if key in EXTRA else "Speech to text"
 
 
 def size_mb(key):
+    if is_voice(key):
+        from . import tts
+        return tts.size_key(key)
     return EXTRA[key][1] if key in EXTRA else MODELS[key][1]
 
 
 def license_of(key):
+    if is_voice(key):
+        from . import tts
+        return tts.license_key(key)
     return EXTRA[key][3] if key in EXTRA else "MIT"
 
 
@@ -81,6 +148,9 @@ def path(key):
 def installed(key):
     """All the files are there (model.bin alone can land before the tokenizer during a download)."""
     p = path(key)
+    if is_voice(key):
+        from . import tts
+        return tts.installed_key(key)
     if not all((p / f).exists() for f in ("config.json", "model.bin", "tokenizer.json")):
         return False
     if key in EXTRA:
@@ -96,9 +166,13 @@ def disk_bytes(key=None):
         return 0
 
 
+def _main_file(key):
+    return voice_main_file(key) if is_voice(key) else "model.bin"
+
+
 def _meta(key):
-    """(commit, etag, timestamp) that Hugging Face recorded when model.bin was downloaded, or None."""
-    p = path(key) / ".cache" / "huggingface" / "download" / "model.bin.metadata"
+    """(commit, etag, timestamp) that Hugging Face recorded when the main file was downloaded, or None."""
+    p = path(key) / ".cache" / "huggingface" / "download" / f"{_main_file(key)}.metadata"
     try:
         lines = p.read_text(encoding="utf-8").split("\n")
         return lines[0].strip(), lines[1].strip(), float(lines[2])
@@ -111,7 +185,7 @@ def downloaded_on(key):
     if m:
         return datetime.date.fromtimestamp(m[2]).isoformat()
     try:
-        return datetime.date.fromtimestamp((path(key) / "model.bin").stat().st_mtime).isoformat()
+        return datetime.date.fromtimestamp((path(key) / _main_file(key)).stat().st_mtime).isoformat()
     except OSError:
         return ""
 
@@ -120,15 +194,30 @@ def check_update(key):
     """Ask Hugging Face whether the model files changed since they were downloaded.
     Returns ("update" | "up-to-date", date of the online version)."""
     from huggingface_hub import HfApi
-    info = HfApi().model_info(REPOS[key], files_metadata=True)
-    date = info.last_modified.date().isoformat() if info.last_modified else ""
+    voice = is_voice(key)
+    if voice and repo_of(key) == "mesolitica":
+        return "up-to-date", downloaded_on(key)
+    if voice:          # one file is enough to tell (the MMS repo holds 1,000+ languages: ask about ours only)
+        main = _main_file(key)
+        found = list(HfApi().get_paths_info(repo_of(key), [main], expand=True))
+        info = None
+        date = ""
+        if found and getattr(found[0], "last_commit", None) and found[0].last_commit.date:
+            date = found[0].last_commit.date.date().isoformat()
+        siblings = found
+    else:
+        info = HfApi().model_info(REPOS[key], files_metadata=True)
+        date = info.last_modified.date().isoformat() if info.last_modified else ""
+        siblings = info.siblings or []
     m = _meta(key)
-    if m and m[0] == info.sha:
+    if info is not None and m and m[0] == info.sha:
         return "up-to-date", date
     # a new commit may only touch the README, so compare the files we actually use
     meta_dir = path(key) / ".cache" / "huggingface" / "download"
-    for s in info.siblings or []:
-        if s.rfilename not in FILES:
+    for s in siblings:
+        if voice:
+            s.rfilename = s.path
+        if s.rfilename not in (FILES if not voice else (_main_file(key),)):
             continue
         remote = (s.lfs.sha256 if s.lfs else s.blob_id) if (s.lfs or s.blob_id) else None
         try:
@@ -150,7 +239,7 @@ def remove(key):
 
 
 def remove_all():
-    for k in ALL:
+    for k in all_keys():
         remove(k)
 
 

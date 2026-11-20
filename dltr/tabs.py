@@ -8,8 +8,8 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import engine, langs, models, theme
-from .common import APP_NAME, FORMATS, fmt_hms, lang_name, log, open_path
+from . import engine, langs, models, pinyin, theme, tts
+from .common import APP_NAME, FORMATS, IS_MAC, fmt_hms, lang_name, log, open_path
 from .theme import UI
 from .widgets import FindBar, searchable
 from .worker import Worker
@@ -17,7 +17,7 @@ from .worker import Worker
 AUTO = "Auto-detect"
 SRC_CHOICES = [AUTO] + [langs.choice(c) for c in langs.NLLB]
 TGT_CHOICES = [langs.choice(c) for c in langs.NLLB]
-ENGINES = {"auto": "Auto (best for these languages)", "ai": "AI: Qwen3 (most natural)",
+ENGINES = {"auto": "Auto (picks the best translator)", "ai": "AI: Qwen3 (most natural)",
            "nllb": "NLLB-200 (200 languages, fast)"}
 DETAIL = {"short": "Short", "normal": "Normal", "detailed": "Detailed"}
 TR_FORMATS = FORMATS
@@ -55,21 +55,93 @@ def _short_code(code):
 split_text = engine.split_text
 
 
+def read_text_file(p):
+    """Text from a TXT / SRT / VTT / Markdown / CSV / Word file (subtitle numbers and times left out)."""
+    p = Path(p)
+    if p.suffix.lower() == ".pdf":
+        from pypdf import PdfReader
+        pages = [(pg.extract_text() or "").strip() for pg in PdfReader(str(p)).pages]
+        text = "\n\n".join(x for x in pages if x)
+        if not text.strip():
+            raise RuntimeError("this PDF has no text in it (a scan or picture?)")
+        return text
+    if p.suffix.lower() == ".docx":
+        import html
+        import zipfile
+        with zipfile.ZipFile(p) as z:
+            xml = z.read("word/document.xml").decode("utf-8", "replace")
+        paras = []
+        for para in re.findall(r"<w:p[ >].*?</w:p>", xml, re.S):
+            para = para.replace("<w:tab/>", "<w:t>\t</w:t>").replace("<w:br/>", "<w:t>\n</w:t>")
+            paras.append(html.unescape("".join(re.findall(r"<w:t(?: [^>]*)?>(.*?)</w:t>", para, re.S))))
+        return "\n".join(paras)
+    raw = p.read_bytes()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = raw.decode("utf-16")
+    else:
+        for enc in ("utf-8-sig", "gb18030", "cp1252"):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            text = raw.decode("utf-8", "replace")
+    if p.suffix.lower() in (".srt", ".vtt"):
+        keep = []
+        for ln in text.splitlines():
+            s_ = ln.strip()
+            if s_.isdigit() or "-->" in s_ or s_.upper().startswith("WEBVTT") or s_.startswith(("NOTE", "STYLE")):
+                continue
+            keep.append(re.sub(r"<[^>]+>", "", ln))
+        text = re.sub(r"\n{3,}", "\n\n", "\n".join(keep))
+    return text
+
+
 class AiRunner:
     """One background worker for translation, summaries and their model downloads (one job at a time)."""
+
+    BACKGROUND = ("names", "suggest")       # jobs nobody waits for: they give way to anything the user starts
 
     def __init__(self, app):
         self.app = app
         self.wk = None
         self.owner = None
+        self.bg = False
 
     def busy(self):
         return self.owner is not None
+
+    def label(self):
+        """Which tab is using the AI right now (for messages)."""
+        return getattr(self.owner, "ai_label", "Another tab")
+
+    def free_for(self, owner):
+        """Make the AI worker available to owner. Background work (finding speaker names, chat suggestions) is
+        stopped to make room. If another tab is really working, ask whether to stop it. True = go ahead."""
+        if self.owner is None or self.owner is owner:
+            return True
+        if self.bg:
+            old = self.stop()
+            if hasattr(old, "ai_cancelled"):
+                old.ai_cancelled()
+            return True
+        name = self.label()
+        if messagebox.askyesno(APP_NAME, f"The {name} tab is still using the AI.\n\nStop it and start this "
+                                         "instead?", parent=self.app):
+            old = self.owner
+            if hasattr(old, "stop"):
+                old.stop()
+            if self.owner is not None:
+                self.stop()
+            return True
+        return False
 
     def run(self, owner, jobs):
         if self.wk is None or self.wk.proc is None or not self.wk.proc.is_alive():
             self.wk = Worker(lambda *a: self.app.events.put(("ai",) + a))
         self.owner = owner
+        self.bg = all(j["kind"] in self.BACKGROUND for j in jobs)
         for j in jobs:
             self.wk.submit(j)
 
@@ -80,9 +152,11 @@ class AiRunner:
 
     def release(self):
         self.owner = None
+        self.bg = False
 
     def stop(self):
         owner, self.owner = self.owner, None
+        self.bg = False
         if self.wk is not None:
             self.wk.kill()
             self.wk = None
@@ -126,6 +200,48 @@ class _Pane(ttk.Frame):
         self.text.configure(yscrollcommand=sb.set, state="disabled")
         self.text.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+        self.seg_text = None            # i -> that sentence's text (for "Copy this sentence")
+        self.copy_all = None            # () -> copies the whole pane nicely (the Copy button)
+        for ev in (("<Button-2>", "<Control-Button-1>") if IS_MAC else ("<Button-3>",)):
+            self.text.bind(ev, self._menu)
+
+    # ------------------------------------------------------------ right-click menu
+    def _editable(self):
+        return str(self.text.cget("state")) == "normal"
+
+    def _menu(self, e):
+        t = self.text
+        p = self.app.pal
+        m = tk.Menu(t, tearoff=0, bg=p["panel"], fg=p["text"], activebackground=p["accent"],
+                    activeforeground="#ffffff", disabledforeground=p["faint"])
+        has_sel = bool(t.tag_ranges("sel"))
+        i = self.seg_at(e)
+        edit = self._editable()
+        if edit:
+            m.add_command(label="Cut", command=lambda: t.event_generate("<<Cut>>"),
+                          state="normal" if has_sel else "disabled")
+        m.add_command(label="Copy", command=self._copy_sel, state="normal" if has_sel else "disabled")
+        if edit:
+            m.add_command(label="Paste", command=lambda: (t.focus_set(), t.event_generate("<<Paste>>")))
+        if i is not None and self.seg_text and not edit:
+            m.add_command(label="Copy this sentence", command=lambda: self._copy(self.seg_text(i)))
+        m.add_separator()
+        m.add_command(label="Select all", command=lambda: (t.tag_add("sel", "1.0", "end-1c"), t.focus_set()))
+        if self.copy_all:
+            m.add_command(label="Copy all", command=self.copy_all)
+        m.tk_popup(e.x_root, e.y_root)
+        return "break"
+
+    def _copy_sel(self):
+        try:
+            self._copy(self.text.get("sel.first", "sel.last"))
+        except tk.TclError:
+            pass
+
+    def _copy(self, text):
+        if text:
+            self.app.clipboard_clear()
+            self.app.clipboard_append(text)
 
     def recolor(self, p, dark):
         sel = p.get("select", "#cce0ff")
@@ -137,30 +253,37 @@ class _Pane(ttk.Frame):
         t.tag_configure("hint", foreground=p["faint"])
         t.tag_configure("pair", background="#2f3b52" if dark else "#fff3b0")
         t.tag_configure("h", foreground=p["accent"], font=(UI, 12 + theme._S, "bold"), spacing1=8, spacing3=2)
+        t.tag_configure("py", foreground=p["muted"], font=(UI, 10 + theme._S), spacing3=8)
         t.tag_raise("sel")
 
-    def show(self, res, timestamps):
+    def show(self, res, timestamps, editable=False):
         t = self.text
         t.configure(state="normal")
         t.delete("1.0", "end")
         ts = timestamps and not res.get("no_times")
         j = " " if ts else ("" if res.get("language") in engine.CJK else " ")
+        want_py = self.app.v_py.get()
         idx = 0
         for pi, (name, para) in enumerate(engine.labelled(res)):
             if pi:
                 t.insert("end", "\n\n")
             if name:
                 t.insert("end", name + "\n", ("spk",))
+            prev_py = False
             for k, s in enumerate(para):
+                txt = s["text"]
+                py = want_py and pinyin.has_han(txt)
                 if k:
-                    t.insert("end", j)
+                    t.insert("end", "\n" if (py or prev_py or ts) else j)   # times / pinyin: a line each
                 tag = f"t{s.get('_i', idx)}"
                 if ts:
                     t.insert("end", f"({fmt_hms(s['start'])}){NBSP}", ("ts", tag))
-                txt = s["text"]
                 t.insert("end", txt if txt else "…", (tag,) + (() if txt else ("hint",)))
+                if py:
+                    t.insert("end", "\n" + pinyin.line(txt), ("py", tag))
+                prev_py = py
                 idx += 1
-        t.configure(state="disabled")
+        t.configure(state="normal" if editable else "disabled")
         if self.on_change:
             self.on_change()
 
@@ -193,6 +316,8 @@ class _Pane(ttk.Frame):
 
 # ============================================================================ Translate
 class TranslateTab(ttk.Frame):
+    ai_label = "Translate"
+
     def __init__(self, nb, app):
         super().__init__(nb, padding=(12, 10, 12, 12))
         self.app = app
@@ -228,10 +353,14 @@ class TranslateTab(ttk.Frame):
         r2 = ttk.Frame(self)
         r2.pack(fill="x", pady=(10, 0))
         ttk.Button(r2, text="Import from Transcribe", command=self.import_transcript).pack(side="left")
+        ttk.Button(r2, text="Open file…", command=self.open_file).pack(side="left", padx=(6, 0))
         ttk.Button(r2, text="Paste text", command=self.paste_mode).pack(side="left", padx=6)
         ttk.Button(r2, text="Clear", command=self.clear).pack(side="left")
         self.go = ttk.Button(r2, text="Translate", style="Accent.TButton", command=self.translate, width=12)
         self.go.pack(side="right")
+        self.voice_btn = ttk.Button(r2, text="🔊  Read aloud ▾", command=self._voice_menu)
+        self.voice_btn.pack(side="right", padx=(0, 8))
+        self._await = None             # Transcribe row that Open file… is transcribing for this tab
         self.info = ttk.Label(r2, style="Muted.TLabel")
         self.info.pack(side="left", padx=12, fill="x", expand=True)
         self.progress = ttk.Progressbar(self, mode="determinate", maximum=1.0)
@@ -251,8 +380,18 @@ class TranslateTab(ttk.Frame):
         for p in (self.top, self.bot):
             p.on_change = self.find.refresh
         ttk.Checkbutton(self.bot.hdr, text="Show timestamps", variable=app.v_ts).pack(side="right", padx=10)
+        ttk.Checkbutton(self.bot.hdr, text="Pinyin", variable=app.v_py).pack(side="right")
         for p in (self.top, self.bot):
             p.text.bind("<ButtonRelease-1>", self._click)
+        self.top.seg_text = lambda i: self._seg_text(False, i)
+        self.bot.seg_text = lambda i: self._seg_text(True, i)
+        self.top.copy_all = lambda: self.copy(False)
+        self.bot.copy_all = lambda: self.copy(True)
+        # the Original box: click and type (or paste) any time; pasted wrapped lines are joined
+        t = self.top.text
+        t.bind("<Button-1>", self._top_press, add="+")
+        t.bind("<Key>", self._top_key, add="+")
+        t.bind("<<Paste>>", self._top_paste)
         bar = app.player_bar(self, self.play_pause, self._seek)
         bar.frame.pack(fill="x", pady=(8, 0))
         row, self._fmts = _format_row(self, app, "tr_formats", TR_FORMATS, app._formats() or ["pdf", "txt"],
@@ -283,9 +422,12 @@ class TranslateTab(ttk.Frame):
         self.find.recolor(dark)
 
     def _empty(self):
-        self.top.message("Press  Import from Transcribe  to bring in the transcript you're looking at on the "
-                         "Transcribe tab (with its timestamps and speakers),\nor  Paste text  to translate any "
-                         "text.\n\nThen pick the languages above and press  Translate.")
+        self.top.message("Click here and type, or press  Paste text  (or Ctrl/Cmd+V here) to translate any text.\n\n"
+                         "Import from Transcribe  brings in the transcript you're looking at on the Transcribe tab "
+                         "(with its timestamps and speakers).  Open file…  opens a text file (TXT, SRT, VTT, Word) "
+                         "or an audio / video file (it's transcribed first).\n\nThen pick the languages above and "
+                         "press  Translate.  🔊 Read aloud  speaks the text with an offline voice.")
+        self.top.text.configure(cursor="xterm")
         self.bot.message("The translation appears here, sentence by sentence. Click a sentence in either box to "
                          "see its match (and play it, for a transcript).")
         self.info.configure(text="")
@@ -323,13 +465,13 @@ class TranslateTab(ttk.Frame):
             self.bot.mark(self.now, False)
 
     # ------------------------------------------------------------ sources
-    def import_transcript(self):
+    def import_transcript(self, item=None):
         app = self.app
         if self.running:
             return
         if app.editing:
             app.end_edit(True)
-        item = app.preview_item
+        item = item or app.preview_item
         r = app.rows.get(item) if item else None
         if not r or not r.get("result"):
             done = [i for i in app.tree.get_children() if app.rows[i].get("result")]
@@ -344,8 +486,12 @@ class TranslateTab(ttk.Frame):
         hint = langs.from_iso(res.get("spoken_language"))
         if hint == "zho_Hans" and res.get("segments"):
             hint = langs.chinese_variant(" ".join(s["text"] for s in res["segments"][:50]))
-        self.src = {"kind": "import", "item": item, "file": r["file"], "no_times": False, "hint": hint,
-                    "res": dict(meta, task="transcribe", segments=segs)}
+        untimed = bool(res.get("no_times"))              # a document added in Chat: no times, no audio
+        self.src = {"kind": "import", "item": item, "file": r["file"], "no_times": untimed, "hint": hint,
+                    "res": dict(meta, task="transcribe", segments=segs, no_times=untimed)}
+        # From = the language the transcript is in (so a Tamil recording isn't translated as Malay)
+        self.v_src.set(langs.choice(hint) if hint in langs.NLLB else AUTO)
+        self._from_import = True
         self.trans, self.result, self.now = [], None, None
         self.top.text.configure(cursor="hand2")
         self.top.title.configure(text=f"Original — {r['file'].name}")
@@ -356,28 +502,344 @@ class TranslateTab(ttk.Frame):
         self.bot.message("Pick the languages above and press  Translate.")
         self._flash("Imported. The original keeps its timestamps and speakers; the translation will too.")
 
-    def paste_mode(self):
+    def paste_mode(self, text=None, name=None, from_clip=True):
+        """Type / paste / opened-file text into the Original box. text=None: take the clipboard (Paste text)."""
         if self.running:
             return
+        if getattr(self, "_from_import", False):           # From was set by an import: new text -> Auto-detect
+            self.v_src.set(AUTO)
+            self._from_import = False
         self.src = {"kind": "paste", "item": None, "file": None, "no_times": True, "hint": None, "editing": True,
-                    "res": {"file": "Pasted text", "segments": [], "no_times": True, "task": "transcribe"}}
+                    "name": name, "res": {"file": name or "Pasted text", "segments": [], "no_times": True,
+                                          "task": "transcribe"}}
         self.trans, self.result, self.now = [], None, None
         t = self.top.text
         t.configure(state="normal", cursor="xterm")
         t.delete("1.0", "end")
+        clip = ""
+        if text is None and from_clip:
+            try:
+                clip = self.app.clipboard_get()
+            except tk.TclError:
+                clip = ""
+            text = clip
+        if text and text.strip():
+            t.insert("1.0", engine.join_wrapped(text.strip("\n")))
+        t.edit_reset()
+        t.focus_set()
+        t.mark_set("insert", "end-1c")
+        self.top.title.configure(text=f"Original — {name}" if name else
+                                 "Original — type or paste here (Ctrl/Cmd+V)")
+        self.bot.title.configure(text="Translation")
+        self.bot.message("Pick the languages above and press  Translate.")
+        self.info.configure(text=name or "Your text")
+        if name:
+            self._flash(f"Opened {name}. Edit it if needed, then press Translate.")
+        elif clip.strip():
+            self._flash("Pasted what was on the clipboard. Edit it if needed, then press Translate.")
+        else:
+            self._flash("Type or paste the text in the top box, then press Translate.")
+
+    # ------------------------------------------------------------ typing in the Original box
+    def _top_press(self, e):
+        if self.running:
+            return
+        if self.src is None:
+            self.paste_mode(from_clip=False)
+
+    def _top_key(self, e):
+        """Typing into the Original box: start a new text, or go back to editing a translated one."""
+        if self.running:
+            return "break" if self.src and self.src["kind"] == "paste" else None
+        typing = (e.char and e.char.isprintable()) or e.keysym in ("BackSpace", "Delete", "Return", "KP_Enter")
+        if not typing or (e.state & 0x4 and e.keysym.lower() not in ("v",)):      # Ctrl+C, Ctrl+A …: leave
+            return None
+        if self.src is None:
+            self.paste_mode(from_clip=False)
+        elif self.src["kind"] == "paste" and not self.src.get("editing"):
+            self._edit_again()
+        return None
+
+    def _top_paste(self, e):
+        """Paste into the Original box, joining lines that were only wrapped."""
+        if self.running:
+            return "break"
+        if self.src is None:
+            self.paste_mode(from_clip=False)
+        elif self.src["kind"] != "paste":
+            return "break"                       # an imported transcript isn't edited here
+        elif not self.src.get("editing"):
+            self._edit_again()
         try:
             clip = self.app.clipboard_get()
         except tk.TclError:
-            clip = ""
-        if clip.strip():
-            t.insert("1.0", clip)
+            return "break"
+        t = self.top.text
+        try:
+            t.delete("sel.first", "sel.last")
+        except tk.TclError:
+            pass
+        t.insert("insert", engine.join_wrapped(clip))
+        t.see("insert")
+        return "break"
+
+    def _edit_again(self):
+        """Back to editing the text after a translation (the translation stays until Translate is pressed)."""
+        segs = self.src["res"]["segments"]
+        raw = self.src.get("raw") or "\n".join(("\n" if s.get("para") and i else "") + s["text"]
+                                              for i, s in enumerate(segs))
+        self.src["editing"] = True
+        t = self.top.text
+        t.configure(state="normal", cursor="xterm")
+        t.delete("1.0", "end")
+        t.insert("1.0", raw)
+        t.mark_set("insert", "end-1c")
         t.focus_set()
-        self.top.title.configure(text="Original — pasted text (type or paste here, Ctrl/Cmd+V)")
-        self.bot.title.configure(text="Translation")
-        self.bot.message("Pick the languages above and press  Translate.")
-        self.info.configure(text="Pasted text")
-        self._flash("Paste or type the text in the top box" + (" (I pasted what was on the clipboard)" if
-                                                                 clip.strip() else "") + ", then press Translate.")
+        self.top.mark(None)
+        self._flash("Editing the text. Press Translate again when you're done.")
+
+    def _take_text(self):
+        """Typed text -> sentences. False if there's nothing."""
+        if self.src["kind"] == "paste" and self.src.get("editing"):
+            text = self.top.text.get("1.0", "end").strip()
+            segs = split_text(text)
+            if not segs:
+                self._flash("The box is empty: type or paste some text first.")
+                return False
+            for i, sg in enumerate(segs):
+                sg["_i"] = i
+            self.src["raw"] = text
+            self.src["res"]["segments"] = segs
+            self.src["res"]["no_times"] = True
+            self.src["no_times"] = True
+            self.src["item"] = None
+            self.src["editing"] = False
+            self.top.text.configure(cursor="hand2")
+            self.info.configure(text=f"{self.src.get('name') or 'Your text'} · {len(segs)} sentences")
+            self.trans, self.result = [], None
+        return True
+
+    def _seg_text(self, translated, i):
+        if not self.src:
+            return ""
+        if translated:
+            return self.trans[i] if i < len(self.trans) and self.trans[i] else ""
+        segs = self.src["res"]["segments"]
+        return segs[i]["text"] if i < len(segs) else ""
+
+    # ------------------------------------------------------------ open a file
+    TEXT_EXT = (".txt", ".srt", ".vtt", ".md", ".docx", ".pdf", ".csv", ".text")
+
+    def open_file(self):
+        if self.running:
+            return
+        from .common import MEDIA_EXT
+        media = " ".join(f"*.{x}" for x in sorted(MEDIA_EXT))
+        f = filedialog.askopenfilename(parent=self.app, title="Open a text, audio or video file", filetypes=[
+            ("Text, audio or video", " ".join(f"*{x}" for x in self.TEXT_EXT) + " " + media),
+            ("Text (TXT, PDF, Word, SRT, VTT)", " ".join(f"*{x}" for x in self.TEXT_EXT)),
+            ("Audio & video", media), ("All files", "*.*")])
+        if not f:
+            return
+        p = Path(f)
+        if p.suffix.lower() in self.TEXT_EXT:
+            try:
+                text = read_text_file(p)
+            except Exception as e:
+                self._flash(f"Couldn't read {p.name}: {e}")
+                return
+            if not text.strip():
+                self._flash(f"{p.name} has no text in it.")
+                return
+            self.paste_mode(text=text, name=p.name)
+            return
+        # audio / video: transcribe it on the Transcribe tab, then bring it in here
+        app = self.app
+        item = next((i for i, r in app.rows.items() if Path(r["file"]) == p), None)
+        if item is None:
+            app.add([str(p)])
+            item = next((i for i, r in app.rows.items() if Path(r["file"]) == p), None)
+            if item is None:
+                self._flash(f"{p.name} isn't an audio or video file this app can read.")
+                return
+        r = app.rows[item]
+        if r.get("result") and r["status"] == "DONE":
+            self.import_transcript(item)
+            return
+        self._await = item
+        app.tree.selection_set(item)
+        if r["status"] in ("FAIL", "SKIP"):
+            app._set_status(item, "WAIT")
+        if not app.running:
+            app.start()
+        self.top.message(f"Transcribing {p.name} on the Transcribe tab …\n\nIt appears here as soon as it's done.")
+        self.bot.message("")
+        self.src, self.trans, self.result = None, [], None
+        self.info.configure(text=p.name)
+        self._flash(f"Transcribing {p.name} first (watch the progress on the Transcribe tab).")
+
+    def on_transcribed(self, item, ok=True):
+        """The Transcribe tab finished a file. If it's the one Open file… asked for, bring it in."""
+        if item != self._await:
+            return
+        self._await = None
+        if ok:
+            self.import_transcript(item)
+            self._flash("Transcribed and imported. Pick the languages above and press Translate.")
+        else:
+            self._empty()
+            self._flash("The transcription didn't finish (see the Transcribe tab).")
+
+    # ------------------------------------------------------------ read aloud
+    def _voice_menu(self):
+        if self.running:
+            return
+        app = self.app
+        p = app.pal
+        m = tk.Menu(self, tearoff=0, bg=p["panel"], fg=p["text"], activebackground=p["accent"],
+                    activeforeground="#ffffff", disabledforeground=p["faint"])
+        has_tr = any(self.trans)
+        has_src = bool(self.src) and (bool(self.src["res"]["segments"]) or (
+            self.src["kind"] == "paste" and self.top.text.get("1.0", "end").strip()))
+        tgt = self.result["_tgt"] if self.result else self._tgt()
+        src = self._source_code() if has_src and self.src["res"]["segments"] else None
+        tv, sv = self._voice_of(tgt), (self._voice_of(src) if src else None)
+        m.add_command(label=f"Read the translation aloud  ·  {langs.name(tgt)}" + (f", {tv['name']}" if tv else ""),
+                      command=lambda: self.read_aloud(True), state="normal" if has_tr else "disabled")
+        m.add_command(label="Read the original aloud" + (f"  ·  {langs.name(src)}, {sv['name']}" if sv else ""),
+                      command=lambda: self.read_aloud(False), state="normal" if has_src else "disabled")
+        m.add_separator()
+        m.add_command(label=f"Choose the {langs.name(tgt)} voice…", command=lambda: self.choose_voice(tgt))
+        if src and tts._base(src) != tts._base(tgt):
+            m.add_command(label=f"Choose the {langs.name(src)} voice…", command=lambda: self.choose_voice(src))
+        m.add_separator()
+        self._g = tk.StringVar(value=app.s.get("tts_gender", "female"))
+        for g, lbl in (("female", "Automatic: female voices"), ("male", "Automatic: male voices")):
+            m.add_radiobutton(label=lbl, value=g, variable=self._g,
+                              command=lambda g=g: (app.s.__setitem__("tts_gender", g), app._save()))
+        m.add_separator()
+        m.add_command(label="About the voices…", command=self._voice_info)
+        b = self.voice_btn
+        m.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
+
+    def _voice_of(self, code):
+        """The voice that will read this language: the one chosen for it, else the automatic pick."""
+        if not code:
+            return None
+        s = self.app.s
+        return tts.pick(code, s.get("tts_gender", "female"), (s.get("voices") or {}).get(tts._base(code)))
+
+    def choose_voice(self, code):
+        from .voice_win import VoiceWindow
+        if self.src and self.src["res"]["segments"]:
+            if tts._base(code) == tts._base(self.result["_tgt"] if self.result else self._tgt()) and any(self.trans):
+                sample = next((t for t in self.trans if t and t.strip()), "")
+            else:
+                sample = next((s["text"] for s in self.src["res"]["segments"] if s["text"].strip()), "")
+        else:
+            sample = ""
+        VoiceWindow(self.app, code, sample)
+
+    def _voice_info(self):
+        messagebox.showinfo(APP_NAME, (
+            "Read aloud makes a temporary voice recording of the text, offline, so you can hear it and click any "
+            "sentence to play it (also handy for text that has no recording).\n\n"
+            "The app picks a native voice for the language by itself:\n"
+            "•  Mandarin and English: Kokoro voices (Apache-2.0, ~215 MB, 100 speakers).\n"
+            "•  Malay: Malaysian voices Yasmin, Osman, Idayu and Husein (mesolitica, ~115 MB each).\n"
+            "•  About 40 more languages (German, French, Spanish, Hindi, Indonesian, Vietnamese, Arabic, Russian, "
+            "Turkish …): native Piper voices (~60 MB each; licence in each voice's MODEL_CARD).\n"
+            "•  Any other language (about 1,100, e.g. Tamil): Meta MMS voices (one voice each, ~115 MB, free for "
+            "non-commercial use).\n\n"
+            "Choose the … voice… lists every voice for a language: preview it with your own text and pick the one "
+            "you like (remembered per language). Each voice downloads the first time it's used. The recording is "
+            "added to the Transcribe list, where Save audio as MP3 saves it. It's a computer voice for checking a "
+            "script, not a voice-over."), parent=self.app)
+
+    def _source_code(self):
+        """The language of the original text (NLLB code)."""
+        c = self.v_src.get()
+        if c != AUTO:
+            return langs.from_choice(c)
+        if self.src.get("hint"):
+            return self.src["hint"]
+        text = " ".join(s["text"] for s in self.src["res"]["segments"][:40])
+        return langs.detect(text)
+
+    def read_aloud(self, translated):
+        app = self.app
+        if self.running or not self.src:
+            return
+        if not translated and not self._take_text():
+            return
+        if translated:
+            if self.src.get("editing"):
+                self._flash("The text was changed: press Translate first, then read the translation aloud.")
+                return
+            if not any(self.trans):
+                self._flash("Translate first, then read the translation aloud.")
+                return
+            texts = [t or "" for t in self.trans]
+            code = self.result["_tgt"] if self.result else self._tgt()
+        else:
+            texts = [s["text"] for s in self.src["res"]["segments"]]
+            code = self._source_code()
+        v = self._voice_of(code)
+        if v is None:
+            self._flash(f"There's no offline voice for {langs.name(code)} yet.")
+            return
+        if not tts.installed(v):
+            if not messagebox.askyesno(APP_NAME, f"Reading {langs.name(code)} aloud with {v['name']} needs a "
+                                                 f"one-time download of about {v['mb']} MB (licence: "
+                                                 f"{v['license']}).\n\nDownload now?", parent=app):
+                self._flash("Voice not downloaded — nothing read. (Choose the voice… lists the others.)")
+                return
+        if not app.ai.free_for(self):
+            self._flash(f"The {app.ai.label()} tab is still using the AI; nothing started.")
+            return
+        stem = Path(str(self.src["file"])).stem if self.src.get("file") else (
+            Path(self.src.get("name")).stem if self.src.get("name") else "Text")
+        folder = tts.voices_dir()
+        out = folder / f"{stem} - {langs.name(code)} voice.wav"
+        k = 2
+        while out.exists() and any(Path(r["file"]) == out for r in app.rows.values()):
+            out = folder / f"{stem} - {langs.name(code)} voice {k}.wav"
+            k += 1
+        self._voice_job = {"translated": translated, "code": code, "texts": texts}
+        self._busy(True)
+        self.progress["value"] = 0
+        self._flash(f"Getting the voice ready ({v['name']}) …")
+        app.ai.run(self, [{"kind": "tts", "id": "tts", "texts": texts, "lang": code, "voice": v["id"],
+                           "out": str(out)}])
+
+    def _voiced(self, info, took):
+        app = self.app
+        job = self._voice_job
+        texts, code = job["texts"], job["code"]
+        iso = "yue" if code == "yue_Hant" else langs.NLLB_TO_ISO.get(code, "en")
+        segs = [{"id": i, "start": st, "end": en, "text": texts[i]} for i, (st, en) in enumerate(info["times"])]
+        res = {"file": info["out"], "model": "read aloud", "device": "cpu", "task": "transcribe",
+               "note": "read aloud", "speakers": [], "voices": [], "language": iso, "spoken_language": iso,
+               "language_probability": 1.0, "duration": info["duration"], "segments": segs}
+        item = app.add_voice(info["out"], res, took)
+        # the sentences now have times in that recording: click to play, follow while playing
+        for i, s in enumerate(self.src["res"]["segments"]):
+            if i < len(segs):
+                s["start"], s["end"] = segs[i]["start"], segs[i]["end"]
+        self.src["res"]["no_times"] = False
+        self.src["no_times"] = False
+        self.src["item"] = item
+        self.src["voice"] = True
+        if self.result:
+            self.result = dict(self._trans_result_for(self.result["_tgt"]), model=self.result.get("model"))
+        self.now = None
+        self.render(keep=True)
+        who = "translation" if job["translated"] else "original"
+        self._flash(f"Read the {who} aloud ({langs.name(code)}, {info.get('voice_name', '')}, "
+                    f"{fmt_hms(info['duration'])}) in {fmt_hms(took)}. "
+                    "Click any sentence to hear it. The recording is also in the Transcribe list "
+                    "(Save audio as MP3 saves it).")
+        self._play(0)
 
     def clear(self):
         if self.running:
@@ -398,20 +860,10 @@ class TranslateTab(ttk.Frame):
         if not self.src:
             self._flash("Import a transcript or paste some text first.")
             return
-        if self.src["kind"] == "paste" and self.src.get("editing"):
-            text = self.top.text.get("1.0", "end").strip()
-            segs = split_text(text)
-            if not segs:
-                self._flash("The box is empty: paste or type some text first.")
-                return
-            for i, sg in enumerate(segs):
-                sg["_i"] = i
-            self.src["res"]["segments"] = segs
-            self.src["editing"] = False
-            self.top.text.configure(cursor="hand2")
-            self.info.configure(text=f"Pasted text · {len(segs)} sentences")
-        if app.ai.busy():
-            self._flash("The Summary tab is busy; wait for it to finish (or stop it).")
+        if not self._take_text():
+            return
+        if not app.ai.free_for(self):
+            self._flash(f"The {app.ai.label()} tab is still using the AI; nothing started.")
             return
         texts = [s["text"] for s in self.src["res"]["segments"]]
         src_choice = self.v_src.get()
@@ -450,9 +902,11 @@ class TranslateTab(ttk.Frame):
     def stop(self):
         if self.app.ai.owner is self:
             self.app.ai.stop()
+        voice = getattr(self, "_voice_job", None) is not None
+        self._voice_job = None
         self._busy(False)
         self.progress["value"] = 0
-        self._flash("Stopped. What was translated so far is kept below.")
+        self._flash("Stopped." if voice else "Stopped. What was translated so far is kept below.")
 
     def on_ai(self, kind, *a):
         if kind == "prog":
@@ -480,12 +934,23 @@ class TranslateTab(ttk.Frame):
             self._flash(f"Translated {sum(1 for t in self.trans if t)} sentences in {fmt_hms(took)} with "
                         f"{'the AI model (Qwen3)' if res['engine'] == 'ai' else 'NLLB-200'}. Click a sentence to "
                         "see its match; Export saves it.")
+        elif kind == "voiced":
+            _jid, info, took = a
+            self.app.ai.release()
+            self._busy(False)
+            self.progress["value"] = 1.0
+            try:
+                self._voiced(info, took)
+            finally:
+                self._voice_job = None
         elif kind in ("fail", "died"):
-            msg = a[1] if kind == "fail" else "The translator stopped unexpectedly."
+            voice = getattr(self, "_voice_job", None) is not None
+            msg = a[1] if kind == "fail" else ("The voice" if voice else "The translator") + " stopped unexpectedly."
             self.app.ai.stop()
             self._busy(False)
+            self._voice_job = None
             self.progress["value"] = 0
-            self._flash(f"Translation failed: {msg}")
+            self._flash(("Reading aloud failed: " if voice else "Translation failed: ") + msg)
 
     def _trans_result_for(self, tgt):
         res = self.src["res"]
@@ -528,7 +993,7 @@ class TranslateTab(ttk.Frame):
     def play_pause(self):
         app = self.app
         if not self.src or self.src["no_times"] or self.src.get("item") not in app.rows:
-            self._flash("Playing works for an imported transcript (pasted text has no audio).")
+            self._flash("Text has no recording: press  🔊 Read aloud  to hear it, then click any sentence.")
             return
         if app.preview_item != self.src["item"]:
             seg = self.src["res"]["segments"][self.now or 0]
@@ -590,6 +1055,8 @@ class TranslateTab(ttk.Frame):
                             "JSON or CSV.")
                 return
         item = self.src.get("item")
+        if item in app.rows and app.rows[item].get("voice"):
+            item = None                     # a read-aloud recording lives in the app's folder: ask where
         if item in app.rows:
             folder = app._outdir_for(app.rows[item])
             stem = Path(app.rows[item]["file"]).stem
@@ -600,7 +1067,7 @@ class TranslateTab(ttk.Frame):
                 if not d:
                     return
                 folder = Path(d)
-            stem = "Pasted text"
+            stem = Path(self.src.get("name") or "Text").stem
         stem = f"{stem}_{_short_code(res['_tgt'])}"
         out = {k: v for k, v in res.items() if not k.startswith("_")}
         out["segments"] = [{k: v for k, v in sg.items() if not k.startswith("_") and k != "para"}
@@ -624,6 +1091,8 @@ class TranslateTab(ttk.Frame):
 
 # ============================================================================ Summary
 class SummaryTab(ttk.Frame):
+    ai_label = "Summary"
+
     def __init__(self, nb, app, tr_tab):
         super().__init__(nb, padding=(12, 10, 12, 12))
         self.app = app
@@ -670,7 +1139,8 @@ class SummaryTab(ttk.Frame):
         self.progress = ttk.Progressbar(self, mode="determinate", maximum=1.0)
         self.progress.pack(fill="x", pady=(10, 0))
 
-        self.paste = _Pane(self, app, "Text to summarise (paste or type here)")
+        self.paste = _Pane(self, app, "Text to summarise (type or paste here)")
+        self._filled = None
         self.paste.text.configure(state="normal", cursor="xterm", height=8)
         self.out = _Pane(self, app, "Summary")
         self.out.pack(fill="both", expand=True)
@@ -708,25 +1178,61 @@ class SummaryTab(ttk.Frame):
         done = [i for i in app.tree.get_children() if app.rows[i].get("result")]
         return app.rows[done[0]] if done else None
 
-    def _source_ui(self):
+    def _source_text(self, f):
+        """The text of the chosen source (transcript / translation), or None if there isn't one yet."""
+        if f == "transcript":
+            r = self._transcript()
+            return engine.to_text(self.app._view(r["result"]), not r["result"].get("no_times")) if r else None
+        if f == "translation":
+            tr = self.tr.result
+            return engine.to_text(tr, not tr.get("no_times")) if tr else None
+        return None
+
+    def _box(self):
+        return self.paste.text.get("1.0", "end-1c")
+
+    def _set_box(self, text):
+        t = self.paste.text
+        t.delete("1.0", "end")
+        t.insert("1.0", text)
+        t.edit_reset()
+
+    def _source_ui(self, switched=True):
+        """The text box is always there: it holds the transcript / translation (edit it, or type over it) or your
+        own text."""
         f = self.v_from.get()
-        if f == "paste":
+        prev = getattr(self, "_shown", None)
+        if switched and prev == "paste":
+            self._paste_text = self._box()                 # keep what was typed for Pasted text
+        if not self.paste.winfo_ismapped():
             self.paste.pack(fill="both", expand=False, before=self.out)
-            self.src_lbl.configure(text="Paste or type the text in the box below.")
+        if f == "paste":
+            if switched or prev != "paste":
+                self._set_box(getattr(self, "_paste_text", ""))
+            self._filled = None
+            self.paste.title.configure(text="Text to summarise (type or paste here)")
+            self.src_lbl.configure(text="Type or paste the text in the box below.")
         else:
-            self.paste.pack_forget()
+            text = self._source_text(f)
+            # refill unless the user changed the text that was put in for them
+            if switched or self._box() == (getattr(self, "_filled", None) or ""):
+                self._set_box(text or "")
+                self._filled = text or ""
             if f == "transcript":
                 r = self._transcript()
                 self.src_lbl.configure(text=f"Transcript: {r['file'].name}" if r else
-                                       "No transcript yet: transcribe a file on the Transcribe tab first.")
+                                       "No transcript yet: type the text below, or transcribe a file first.")
+                self.paste.title.configure(text="Transcript to summarise (edit it, or type your own text)")
             else:
                 tr = self.tr.result
                 self.src_lbl.configure(text=f"Translation ({tr.get('target_name')}) of "
                                             f"{Path(str(tr['file'])).name}" if tr else
-                                       "No translation yet: translate something on the Translate tab first.")
+                                       "No translation yet: type the text below, or translate something first.")
+                self.paste.title.configure(text="Translation to summarise (edit it, or type your own text)")
+        self._shown = f
 
     def refresh(self):
-        self._source_ui()
+        self._source_ui(switched=False)
 
     def summarize(self):
         app = self.app
@@ -734,31 +1240,25 @@ class SummaryTab(ttk.Frame):
             self.stop()
             return
         f = self.v_from.get()
-        if f == "paste":
-            text = self.paste.text.get("1.0", "end").strip()
-            times, self.stem, self.src_item = False, "Pasted text", None
-        elif f == "transcript":
+        text = self._box().strip()             # whatever is in the box: the source as it is, edited, or typed
+        times, self.stem, self.src_item = False, "Text", None
+        if f == "transcript" and (self._filled or "").strip():
             r = self._transcript()
-            if not r:
-                self._flash("No transcript yet: transcribe a file on the Transcribe tab first.")
-                return
-            res = app._view(r["result"])
-            text, times, self.stem = engine.to_text(res, True), True, Path(r["file"]).stem
-            self.src_item = next((i for i, x in app.rows.items() if x is r), None)
-        else:
+            if r:
+                times = not r["result"].get("no_times") and bool(re.search(r"\(\d+:\d\d", text))
+                self.stem = Path(r["file"]).stem
+                self.src_item = next((i for i, x in app.rows.items() if x is r), None)
+        elif f == "translation" and (self._filled or "").strip():
             tr = self.tr.result
-            if not tr:
-                self._flash("No translation yet: translate something on the Translate tab first.")
-                return
-            text = engine.to_text(tr, not tr.get("no_times"))
-            times = not tr.get("no_times")
-            self.stem = Path(str(tr["file"])).stem + f"_{_short_code(tr['_tgt'])}"
-            self.src_item = self.tr.src.get("item") if self.tr.src else None
+            if tr:
+                times = not tr.get("no_times") and bool(re.search(r"\(\d+:\d\d", text))
+                self.stem = Path(str(tr["file"])).stem + f"_{_short_code(tr['_tgt'])}"
+                self.src_item = self.tr.src.get("item") if self.tr.src else None
         if not text.strip():
             self._flash("There's no text to summarise.")
             return
-        if app.ai.busy():
-            self._flash("The Translate tab is busy; wait for it to finish (or stop it).")
+        if not app.ai.free_for(self):
+            self._flash(f"The {app.ai.label()} tab is still using the AI; nothing started.")
             return
         from . import ai
         need = ensure_models(app, [ai.AI_KEY], "The AI summary")

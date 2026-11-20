@@ -32,7 +32,7 @@ class ModelsWindow:
 
         top = ttk.Frame(w, padding=(12, 10, 12, 6))
         top.pack(fill="x")
-        ttk.Label(top, text="Transcription models", style="Title.TLabel").pack(side="left")
+        ttk.Label(top, text="Models", style="Title.TLabel").pack(side="left")
         ttk.Button(top, text="Open folder", command=self.open_folder).pack(side="right", padx=(10, 0))
         self.where = ttk.Label(top, style="Muted.TLabel")
         self.where.pack(side="right")
@@ -100,7 +100,7 @@ class ModelsWindow:
             return False
 
     def _sel(self, want_installed=None):
-        keys = [k for k in self.tree.selection() if k in models.ALL]
+        keys = [k for k in self.tree.selection() if k in models.all_keys()]
         if want_installed is not None:
             keys = [k for k in keys if models.installed(k) == want_installed]
         return keys
@@ -128,9 +128,9 @@ class ModelsWindow:
         t.tag_configure("using", font=(theme.UI, 9 + theme._S, "bold"))
         rec = models.recommended(self.app.has_gpu)
         using = self.app._model_name()
-        for k in models.ALL:
+        for k in models.all_keys():
             mb = models.size_mb(k)
-            speed, acc, _ = models.INFO[k]
+            speed, acc, _ = models.info(k)
             inst = models.installed(k)
             rs = self.remote.get(k)
             if self.busy == "download" and k in self.queue_keys and k not in self.done_keys:
@@ -145,6 +145,8 @@ class ModelsWindow:
                 status, tag = "Installed", "installed"
             if inst and k == using:
                 status += " · in use"
+            elif inst and models.is_voice(k):
+                status += " · used by Read aloud"
             elif inst and k in models.EXTRA:
                 status += " · used by " + ("Summary + Translate" if k == "qwen3-4b" else "Translate")
             size = models.fmt_size(models.disk_bytes(k)) if inst else models.fmt_size(mb * 1e6)
@@ -163,9 +165,9 @@ class ModelsWindow:
         if not s:
             return
         k = s[0]
-        speed, acc, about = models.INFO[k]
+        speed, acc, about = models.info(k)
         extra = "" if models.installed(k) else f"  Download: about {models.fmt_size(models.size_mb(k) * 1e6)}."
-        self.desc.configure(text=f"{k} — {about}{extra}\nhttps://huggingface.co/{models.REPOS[k]}")
+        self.desc.configure(text=f"{k} — {about}{extra}\nhttps://huggingface.co/{models.repo_of(k)}")
 
     def _poll(self):
         if not self.alive():
@@ -245,7 +247,7 @@ class ModelsWindow:
         self.download(keys)
 
     def download_all(self):
-        keys = [k for k in models.ALL if not models.installed(k)]
+        keys = [k for k in models.all_keys() if not models.installed(k)]
         if not keys:
             messagebox.showinfo("Models", "All models are already on this PC.", parent=self.win)
             return
@@ -257,7 +259,7 @@ class ModelsWindow:
 
     # ------------------------------------------------------------ updates
     def check_updates(self):
-        keys = [k for k in models.ALL if models.installed(k)]
+        keys = [k for k in models.all_keys() if models.installed(k)]
         if not keys:
             messagebox.showinfo("Models", "No models downloaded yet.", parent=self.win)
             return
@@ -332,7 +334,7 @@ class ModelsWindow:
             self._remove(keys, "Removing …")
 
     def remove_all(self):
-        keys = [k for k in models.ALL if models.installed(k)]
+        keys = [k for k in models.all_keys() if models.installed(k)]
         if not keys:
             messagebox.showinfo("Models", "No models downloaded.", parent=self.win)
             return
@@ -345,6 +347,9 @@ class ModelsWindow:
     # ------------------------------------------------------------ other
     def use_selected(self):
         s = self._sel()
+        if s and models.is_voice(s[0]):
+            self.status.configure(text=f"{s[0]} is used automatically by 🔊 Read aloud on the Translate tab.")
+            return
         if s and s[0] in models.EXTRA:
             self.status.configure(text=f"{s[0]} is used automatically by the Translate / Summary tabs.")
             return

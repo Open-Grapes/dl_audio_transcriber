@@ -172,7 +172,7 @@ class UpdateWindow:
         self.sub.configure(text="Asking GitHub for the latest version.")
         self.status.configure(text="")
         self.models_lbl.configure(text="Models: checking …")
-        have = [k for k in models.ALL if models.installed(k)]
+        have = [k for k in models.all_keys() if models.installed(k)]
         steps = 1 + len(have)                     # GitHub, then each downloaded model: the bar fills 0 -> 100 %
         self.pbar.stop()
         self.pbar.configure(mode="determinate", value=0.02)
@@ -229,7 +229,7 @@ class UpdateWindow:
 
     def _show_models(self, ups, err):
         self.model_updates = ups
-        have = [k for k in models.ALL if models.installed(k)]
+        have = [k for k in models.all_keys() if models.installed(k)]
         if err is not None:
             self.models_lbl.configure(text="Couldn't check the models (Hugging Face not reachable).")
         elif not have:

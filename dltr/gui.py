@@ -13,7 +13,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import engine, media, models, speakers, theme
+from . import engine, media, models, pinyin, speakers, theme
 from .worker import Worker
 from .common import (APP_NAME, APP_VERSION, IS_MAC, IS_WIN, LOG, FORMATS, LANGUAGES, MODELS, asset, find_media, fmt_hms,
                      lang_name, load_settings, log, open_path, save_settings)
@@ -142,6 +142,7 @@ class App(BaseTk):
         self.v_ts = tk.BooleanVar(value=s.get("timestamps", True))
         self.v_spk = tk.BooleanVar(value=s.get("speakers", False))
         self.v_showspk = tk.BooleanVar(value=s.get("show_speakers", True))
+        self.v_py = tk.BooleanVar(value=s.get("pinyin", False))     # Hanyu Pinyin under Chinese lines
         self.v_find = tk.StringVar()
         self.v_nspk = tk.StringVar(value=str(s.get("num_speakers") or "Auto"))
         fm = s.get("formats", ["pdf", "txt", "srt"])
@@ -154,6 +155,8 @@ class App(BaseTk):
         self.v_ts.trace_add("write", lambda *_: (self._render(keep_view=True),
                                                  hasattr(self, "trans_tab") and self.trans_tab.render()))
         self.v_showspk.trace_add("write", lambda *_: (self._save(), self._render(keep_view=True)))
+        self.v_py.trace_add("write", lambda *_: (self._save(), self._render(keep_view=True),
+                                                 hasattr(self, "trans_tab") and self.trans_tab.render()))
 
     @staticmethod
     def _label(key):
@@ -195,7 +198,7 @@ class App(BaseTk):
                       multilingual=self.v_mixed.get(), hints=self.v_hints.get(), timestamps=self.v_ts.get(),
                       formats=self._formats(), theme="dark" if self.dark else "light",
                       speakers=self.v_spk.get(), num_speakers=self._num_speakers(),
-                      show_speakers=self.v_showspk.get(),
+                      show_speakers=self.v_showspk.get(), pinyin=self.v_py.get(),
                       volume=round(self.player.volume, 2))
         save_settings(self.s)
 
@@ -225,6 +228,7 @@ class App(BaseTk):
         self.wifi_btn = ttk.Button(btns, text="Share via Wi-Fi", command=self.open_wifi)
         self.wifi_btn.pack(side="right", padx=(10, 0))
         ttk.Button(btns, text="Models…", command=self.open_models).pack(side="right")
+        self.stopall_btn = ttk.Button(btns, text="■  Stop all", style="Stop.TButton", command=self.stop_all)
         self.device_lbl = ttk.Label(right, text="Checking GPU …", style="Muted.TLabel")
         self.device_lbl.pack(anchor="e", pady=(4, 0))
         self.warn_lbl = ttk.Label(self, style="Warn.TLabel", wraplength=900, justify="left")
@@ -355,6 +359,8 @@ class App(BaseTk):
         self.edit_btn = ttk.Button(hdr, text="Edit transcript", command=self.toggle_edit, width=14)
         self.edit_btn.pack(side="right")
         ttk.Checkbutton(hdr, text="Show timestamps", variable=self.v_ts).pack(side="right", padx=(10, 12))
+        self.py_cb = ttk.Checkbutton(hdr, text="Pinyin", variable=self.v_py)
+        self.py_cb.pack(side="right", padx=(10, 0))
         self.showspk_cb = ttk.Checkbutton(hdr, text="Show speakers", variable=self.v_showspk)
         self.showspk_cb.pack(side="right")
         ttk.Button(hdr, text="Speakers…", command=self.open_speakers).pack(side="right", padx=(0, 8))
@@ -427,6 +433,9 @@ class App(BaseTk):
         self.chat_tab = ChatTab(self.nb, self)
         self.nb.add(self.chat_tab, text="   Chat   ")
         self.nb.bind("<<NotebookTabChanged>>", lambda e: (self.sum_tab.refresh(), self.chat_tab.refresh()))
+        from .widgets import copyable
+        for lbl in (self.status, self.trans_tab.status, self.sum_tab.status, self.chat_tab.status):
+            copyable(lbl, self)
 
     def player_bar(self, parent, on_play, on_seek=None):
         """Play/pause, time, seek slider and volume, all driving the one audio player."""
@@ -472,6 +481,7 @@ class App(BaseTk):
         self.text.configure(bg=p["field"], fg=p["text"], insertbackground=p["text"], highlightbackground=p["line"],
                             highlightcolor=p["accent"], selectbackground=sel, inactiveselectbackground=sel)
         self.text.tag_configure("ts", foreground=p["faint"], font=(UI, 9 + theme._S))
+        self.text.tag_configure("py", foreground=p["muted"], font=(UI, 10 + theme._S), spacing3=8)
         self.text.tag_configure("ets", foreground=p["accent"], font=(MONO, 10 + theme._S))
         self.text.tag_configure("now", background="#2f3b52" if self.dark else "#fff3b0")
         self.text.tag_configure("err", foreground=p["tags"]["FAIL"])
@@ -574,6 +584,40 @@ class App(BaseTk):
         if not self.tree.selection():
             self.tree.selection_set(first)
 
+    def add_voice(self, path, res, took=None):
+        """A read-aloud recording from the Translate tab: a finished row, so it plays, follows along and can be
+        saved as MP3 like any transcript."""
+        f = Path(path)
+        for i, r in list(self.rows.items()):
+            if Path(r["file"]) == f and i != self.current:
+                self._drop_row(i)                  # the same file was made again: replace the old row
+        item = self.tree.insert("", "end", values=(f.name, fmt_hms(res["duration"]), lang_name(res["language"]),
+                                                   "✅ Read aloud", fmt_hms(took) if took else ""), tags=("DONE",))
+        self.rows[item] = {"file": f, "status": "DONE", "result": res, "outputs": [], "duration": res["duration"],
+                           "dirty": False, "voice": True}
+        return item
+
+    def add_doc(self, path, text):
+        """A document (TXT, Word, PDF …) added in Chat: a finished row with its text and no audio, so Chat,
+        Translate and Summary can use it like a transcript."""
+        from . import langs as _langs
+        f = Path(path)
+        for i, r in list(self.rows.items()):
+            if Path(r["file"]) == f and r.get("doc"):
+                self._drop_row(i)
+        segs = engine.split_text(text)
+        for i, s in enumerate(segs):
+            s["id"] = i
+        code = _langs.detect(" ".join(s["text"] for s in segs[:60]))
+        iso = "yue" if code == "yue_Hant" else _langs.NLLB_TO_ISO.get(code, "en")
+        res = {"file": str(f), "model": "document", "device": "", "task": "transcribe", "note": "document",
+               "speakers": [], "voices": [], "language": iso, "spoken_language": iso, "language_probability": 1.0,
+               "duration": 0.0, "no_times": True, "segments": segs}
+        item = self.tree.insert("", "end", values=(f.name, "", lang_name(iso), "📄 Document", ""), tags=("DONE",))
+        self.rows[item] = {"file": f, "status": "DONE", "result": res, "outputs": [], "duration": None,
+                           "dirty": False, "doc": True}
+        return item
+
     def _probe(self, item, f):
         self.events.put(("dur", item, engine.probe_duration(f)))
 
@@ -626,7 +670,8 @@ class App(BaseTk):
             return
         if not any(r["status"] == "WAIT" for r in self.rows.values()):
             # nothing new: re-run the selected rows (e.g. with another model)
-            again = [i for i in self.tree.selection() if self.rows[i]["status"] in ("DONE", "FAIL", "SKIP")]
+            again = [i for i in self.tree.selection() if self.rows[i]["status"] in ("DONE", "FAIL", "SKIP")
+                     and not self.rows[i].get("doc") and not self.rows[i].get("voice")]
             if not again:
                 self._flash("Drop some files first." if not self.rows else
                             "Everything in the list is done. Select a file and press Start to redo it.")
@@ -709,6 +754,8 @@ class App(BaseTk):
             self._set_status(self.current, "SKIP")
             if self.current == self.preview_item:
                 self._preview(self.current)
+            self.trans_tab.on_transcribed(self.current, ok=False)
+            self.chat_tab.on_transcribed(self.current, ok=False)
         self._finish(cancelled=True)
 
     def _next(self):
@@ -763,7 +810,37 @@ class App(BaseTk):
                 self._set(self.current, status=f"⏳ {frac:.0%}")
         self._tick(reschedule=False)
 
+    def _anything_running(self):
+        return self.running or (self.ai.busy() and not self.ai.bg)
+
+    def _stopall_ui(self):
+        on = self._anything_running()
+        if on and not self.stopall_btn.winfo_ismapped():
+            self.stopall_btn.pack(side="right", padx=(0, 10))
+        elif not on and self.stopall_btn.winfo_ismapped():
+            self.stopall_btn.pack_forget()
+
+    def stop_all(self):
+        """Stop everything that's running (transcribing, translating, summary, chat, voice) and start the
+        background workers afresh, so the next job never waits on something stuck."""
+        if self.running:
+            self.stop()
+        for tab in (self.trans_tab, self.sum_tab, self.chat_tab):
+            try:
+                if getattr(tab, "running", False):
+                    tab.stop()
+            except Exception as e:
+                log(f"stop all: {tab.__class__.__name__}: {e!r}")
+        old = self.ai.stop()                      # also kills an idle worker: a fresh one starts next time
+        if hasattr(old, "ai_cancelled"):
+            old.ai_cancelled()
+        self.wk.kill()
+        self._stopall_ui()
+        self._flash("Stopped everything. You can start again now.", 15)
+
     def _tick(self, reschedule=True):
+        if reschedule:
+            self._stopall_ui()
         if self.running and time.time() > self.flash_until:
             name = self.rows[self.current]["file"].name + ": " if self.current in self.rows else ""
             pct = f"{self.progress['value']:.0%} · "
@@ -851,6 +928,8 @@ class App(BaseTk):
                 if res.get("speakers") and hasattr(self, "names"):
                     self.names.queue(item)
             self.progress["value"] = 1.0
+            self.trans_tab.on_transcribed(item)
+            self.chat_tab.on_transcribed(item)
             self._run_next()
         elif kind == "fail":
             jid, msg = a
@@ -865,6 +944,8 @@ class App(BaseTk):
                 if jid == self.preview_item:
                     self._preview(jid)
             self._flash(f"{self.rows[jid]['file'].name}: {msg}" if jid in self.rows else msg, 10)
+            self.trans_tab.on_transcribed(jid, ok=False)
+            self.chat_tab.on_transcribed(jid, ok=False)
             self._run_next()
         elif kind == "died":
             jid, code = a
@@ -1009,6 +1090,7 @@ class App(BaseTk):
             self.preview_lbl.configure(text=f"Transcript — {r['file'].name}" + (" (live)" if live else ""))
             if segs:
                 res = self._view(r.get("result") or {"segments": segs, "language": None})
+                self._untimed = bool(res.get("no_times"))
                 j = " " if self.v_ts.get() else ("" if res.get("language") in engine.CJK else " ")
                 idx = 0
                 for pi, (name, para) in enumerate(engine.labelled(res)):
@@ -1022,7 +1104,7 @@ class App(BaseTk):
                             self.text.insert("end", f"  {'♀' if v == 'female' else '♂'} {v.capitalize()}", ("ts", "prot"))
                         self.text.insert("end", "\n", ("prot",))
                     for k, s in enumerate(para):
-                        self._insert_seg(s, idx, sep=(j if k else ""))
+                        self._insert_seg(s, idx, sep=(j if k else ""), cont=bool(k))
                         idx += 1
             elif r.get("error"):
                 self.text.insert("end", f"Failed: {r['error']}", "err")
@@ -1037,13 +1119,20 @@ class App(BaseTk):
         if self.find_bar.winfo_ismapped():
             self._find_all(scroll=False)
 
-    def _insert_seg(self, s, i, sep=""):
+    def _insert_seg(self, s, i, sep="", cont=False):
         tag = f"s{i}"
-        if sep:
+        py = self.v_py.get() and not self.editing and pinyin.has_han(s["text"])
+        if cont and (py or getattr(self, "_py_prev", False) or self.v_ts.get()):
+            self.text.insert("end", "\n")            # with timestamps or pinyin, each sentence gets its own line
+        elif sep:
             self.text.insert("end", sep)
-        if self.v_ts.get():
-            self.text.insert("end", f"({fmt_hms(s['start'])}) ", ("ts", "seg", tag, "prot"))
+        self._py_prev = py
+        if self.v_ts.get() and not getattr(self, "_untimed", False):
+            self.text.insert("end", f"({fmt_hms(s['start'])})\u00a0", ("ts", "seg", tag, "prot"))
         self.text.insert("end", s["text"], ("seg", tag))
+        if py:
+            # the pinyin goes on its own line under the sentence (part of the sentence: clicking it plays it)
+            self.text.insert("end", "\n" + pinyin.line(s["text"]), ("py", "seg", tag, "prot"))
 
     def _append(self, seg, i):
         """A live segment while transcribing (new paragraph after a pause)."""
@@ -1058,7 +1147,7 @@ class App(BaseTk):
             prev = segs[i - 1] if i - 1 < len(segs) else None
             sep = "\n\n" if prev and seg["start"] - prev["end"] > 2.0 else " "
         at_end = self.text.yview()[1] > 0.98
-        self._insert_seg(seg, i, sep)
+        self._insert_seg(seg, i, sep, cont=(sep == " "))
         if at_end:
             self.text.see("end")
         self.text.configure(state="disabled")
@@ -1625,6 +1714,9 @@ class App(BaseTk):
         r = self.rows.get(self.preview_item)
         if not r:
             return
+        if r.get("doc"):
+            self._flash("This is a document: it has no audio.")
+            return
         self.audio_item = self.preview_item
         self.pending_seek = then_play_at
         if self.audio_state == "preparing":
@@ -1730,13 +1822,14 @@ class App(BaseTk):
 
     def _player_ui(self):
         r = self.rows.get(self.preview_item)
-        has = r is not None
+        has = r is not None and not r.get("doc")
         playing = self.audio_state == "ready" and self.player.playing()
         for b in self.bars:
             b.play.configure(text=I_PAUSE if playing else I_PLAY,
                              state="normal" if has and self.audio_state != "preparing" else "disabled")
             b.seek.state(["!disabled"] if has else ["disabled"])
         self.mp3_btn.configure(state="normal" if has else "disabled")
+        has = r is not None
         can_edit = has and r.get("result") is not None and r["status"] != "RUN"
         self.edit_btn.configure(state="normal" if can_edit or self.editing else "disabled")
         has_spk = has and bool((r.get("result") or {}).get("speakers"))

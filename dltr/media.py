@@ -3,6 +3,7 @@
 import ctypes
 import hashlib
 import os
+import shutil
 import sys
 import threading
 from pathlib import Path
@@ -167,11 +168,37 @@ class _MciPlayer:
             raise RuntimeError(eb.value or f"MCI error {err}")
         return buf.value
 
+    @staticmethod
+    def _short(path):
+        """MCI can't take long paths (deep project folders): use the 8.3 short name, or a short-named copy of the
+        file in the app's cache when the drive has no short names."""
+        path = str(path)
+        if len(path) < 120:
+            return path
+        try:
+            buf = ctypes.create_unicode_buffer(1024)
+            n = ctypes.windll.kernel32.GetShortPathNameW(path, buf, 1024)
+            if 0 < n < 1024 and len(buf.value) < 120 and buf.value != path:
+                return buf.value
+        except Exception:
+            pass
+        src = Path(path)
+        CACHE.mkdir(parents=True, exist_ok=True)
+        st = src.stat()
+        key = hashlib.sha1(f"{src}|{st.st_size}|{st.st_mtime_ns}".encode()).hexdigest()[:16]
+        dst = CACHE / f"{key}{src.suffix.lower()}"
+        if not dst.exists():
+            try:
+                os.link(src, dst)                       # same drive: instant, no extra space
+            except OSError:
+                shutil.copyfile(src, dst)
+        return str(dst)
+
     def open(self, path):
         self.close()
         _MciPlayer._n += 1
         alias = f"dltr{_MciPlayer._n}"
-        self._mci(f'open "{path}" type mpegvideo alias {alias}')
+        self._mci(f'open "{self._short(path)}" type mpegvideo alias {alias}')
         self.alias = alias
         self._mci(f"set {alias} time format milliseconds")
         try:

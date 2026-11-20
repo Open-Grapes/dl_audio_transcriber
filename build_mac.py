@@ -61,7 +61,7 @@ def pyinstaller():
        "--collect-all", "langid", "--collect-all", "tokenizers",
        "--add-data", f"{ROOT / 'dltr' / 'web_page.html'}:dltr",
        "--collect-submodules", "zeroconf", "--collect-submodules", "qrcode",
-       "--hidden-import", "sounddevice", "--collect-all", "_sounddevice_data",
+       "--hidden-import", "sounddevice", "--collect-all", "_sounddevice_data", "--collect-all", "pypinyin", "--collect-submodules", "pypdf",
        "--hidden-import", "AVFoundation", "--hidden-import", "Foundation", "--hidden-import", "objc",
        "--distpath", WORK / "dist", "--workpath", WORK / "work", "--specpath", WORK, ROOT / "run.py")
 

@@ -208,3 +208,21 @@ class FindBar(ttk.Frame):
         if scroll:
             t.see(a)
         self.lbl.configure(text=f"{self.i + 1} of {len(self.hits)}")
+
+
+def copyable(label, app):
+    """Right-click a status line to copy its message (e.g. an error to send to someone)."""
+    import sys
+    import tkinter as tk
+
+    def menu(e):
+        text = label.cget("text")
+        if not text:
+            return
+        p = app.pal
+        m = tk.Menu(label, tearoff=0, bg=p["panel"], fg=p["text"], activebackground=p["accent"],
+                    activeforeground="#ffffff")
+        m.add_command(label="Copy message", command=lambda: (app.clipboard_clear(), app.clipboard_append(text)))
+        m.tk_popup(e.x_root, e.y_root)
+    for ev in (("<Button-2>", "<Control-Button-1>") if sys.platform == "darwin" else ("<Button-3>",)):
+        label.bind(ev, menu)

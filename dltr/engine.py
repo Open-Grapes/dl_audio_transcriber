@@ -52,7 +52,10 @@ def download(name, progress=None):
 
     def run():
         try:
-            if name in models.EXTRA:          # translation / AI models
+            if models.is_voice(name):         # read-aloud voices
+                from . import tts
+                tts.download_key(name)
+            elif name in models.EXTRA:          # translation / AI models
                 from huggingface_hub import snapshot_download
                 from faster_whisper.utils import disabled_tqdm      # no progress bar: the app has no console
                 snapshot_download(models.REPOS[name], local_dir=str(dest), allow_patterns=models.DOWNLOAD_PATTERNS,
@@ -212,6 +215,11 @@ def transcribe(path, opts, on_progress=None, on_segment=None, cancel=None):
         seg_iter, info = start(**kw)
         note = (note + "; " if note else "") + "already English"
 
+    if not language and not hints and info.language == "zh":
+        # Detected Mandarin: without the prompt Whisper often writes one long line with no punctuation,
+        # so start again with it (only language detection has run so far).
+        kw.update(language="zh", initial_prompt="以下是普通话的句子。")
+        seg_iter, info = start(**kw)
     detected = info.language
     if on_progress:
         on_progress(0.0, f"Language: {lang_name(detected)} ({info.language_probability:.0%})")
@@ -226,6 +234,10 @@ def transcribe(path, opts, on_progress=None, on_segment=None, cancel=None):
                           "probability": round(w.probability, 3)} for w in (s.words or [])]}
         if not seg["text"]:
             continue
+        if detected == "zh":
+            seg["text"] = _zh_punct(seg["text"])
+            for w in seg["words"]:
+                w["word"] = _zh_punct(w["word"])
         for part in split_sentences(seg):
             part["id"] = len(segments)
             segments.append(part)
@@ -271,19 +283,41 @@ _ENDS = tuple(".?!。？！…")
 _SOFT = tuple(",，、;；:")
 
 
+def _zh_punct(t):
+    """Chinese text with Chinese commas etc. (Whisper writes ',' '?' between Chinese characters)."""
+    t = re.sub(r"(?<=[一-鿿0-9]),\s*", "，", t)
+    return re.sub(r"(?<=[一-鿿])\?", "？", t)
+
+
+PAUSE_SOFT = 0.8     # seconds of silence after a comma that start a new line
+PAUSE_HARD = 1.2     # ... and with no punctuation at all
+
+
 def split_sentences(seg):
     """Cut a long recognised chunk into sentences using its word timings, so every sentence gets its own
-    timestamp and can be clicked to play. (The fast GPU mode returns chunks of up to 30 seconds.)"""
+    timestamp and can be clicked to play. (The fast GPU mode returns chunks of up to 30 seconds.)
+    Also cuts where the speaker clearly pauses (a voice-over reading line by line), even mid-sentence."""
     words = seg.get("words") or []
     if len(words) < 2:
         return [seg]
+    def gap(i):
+        return max(0.0, words[i + 1]["start"] - words[i]["end"]) if 0 <= i < len(words) - 1 else 0.0
+
     parts, cur = [], []
-    for w in words:
+    for i, w in enumerate(words):
         cur.append(w)
         t = w["word"].strip()
-        if t.endswith(_ENDS) or (len(cur) >= 30 and t.endswith(_SOFT)):
+        # Whisper's word timings often put a pause one word late, so look at the next gap too.
+        if t.endswith(_ENDS) or (len(cur) >= 30 and t.endswith(_SOFT)) or (
+                t.endswith(_SOFT) and gap(i) + gap(i + 1) >= PAUSE_SOFT):
             parts.append(cur)
             cur = []
+        elif len(cur) >= 3 and gap(i) >= PAUSE_HARD:
+            # a long pause with no punctuation: cut there, or at a comma just before it
+            k = next((j for j in range(len(cur) - 2, max(len(cur) - 4, 0), -1)
+                      if cur[j]["word"].strip().endswith(_SOFT + _ENDS)), len(cur) - 1)
+            parts.append(cur[:k + 1])
+            cur = cur[k + 1:]
     if cur:
         if parts and len(cur) <= 2 and not "".join(x["word"] for x in cur).strip().endswith(_ENDS):
             parts[-1].extend(cur)      # a dangling word or two belongs to the sentence before
@@ -336,7 +370,10 @@ def paragraphs(result):
     for s in result["segments"]:
         long_para = sum(len(x["text"]) for x in cur) > 600 and cur and cur[-1]["text"][-1:] in ".?!。？！"
         turn = spk and cur and s.get("speaker") != cur[-1].get("speaker")
-        gap = s.get("para") if untimed else (last_end is not None and s["start"] - last_end > 2.0)
+        if untimed or "para" in s:            # typed / pasted text (also once read aloud): its own lines
+            gap = s.get("para")
+        else:
+            gap = last_end is not None and s["start"] - last_end > 2.0
         if cur and (gap or long_para or turn):
             paras.append(cur)
             cur = []
@@ -625,10 +662,27 @@ def save_summary(md, formats, folder, stem, title, subtitle=""):
     return paths
 
 
+_LINE_END = tuple(".!?…。！？,，;；:：、)]）」』\"'”’")
+
+
+def join_wrapped(text):
+    """Join lines that were only wrapped (copied from a PDF or a narrow column): a line that doesn't end in
+    punctuation, followed by one that starts with a small letter, is the same sentence."""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    out = []
+    for ln in lines:
+        if (out and out[-1].strip() and ln.strip() and not out[-1].rstrip().endswith(_LINE_END)
+                and ln.lstrip()[:1].islower()):
+            out[-1] = out[-1].rstrip() + " " + ln.strip()
+        else:
+            out.append(ln)
+    return "\n".join(out)
+
+
 def split_text(text):
     """Pasted text -> sentences (segments without times), keeping its paragraphs."""
     segs = []
-    for para in re.split(r"\n\s*\n|\r?\n", text.strip()):
+    for para in re.split(r"\n\s*\n|\r?\n", join_wrapped(text).strip()):
         para = para.strip()
         if not para:
             continue

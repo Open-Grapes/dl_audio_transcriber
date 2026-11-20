@@ -9,8 +9,10 @@ pillow>=10.0
 pyinstaller>=6.0
 fpdf2>=2.8
 uharfbuzz
-sherpa-onnx
+sherpa-onnx==1.13.8   # 2.x dropped the built-in pronunciation (espeak) the Piper voices need
 langid
 qrcode>=7.4
 zeroconf>=0.130
 sounddevice>=0.5
+pypinyin>=0.55
+pypdf>=5
