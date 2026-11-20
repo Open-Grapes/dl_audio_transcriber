@@ -86,7 +86,10 @@ class App(BaseTk):
         # the look: Fresh Mint (default, sidebar menu) or Legacy (tabs across the top). Fixed until a restart.
         ui = self.s.get("ui_style")
         theme.STYLE = ui if ui in theme.THEMES else theme.DEFAULT_THEME
-        self.geometry("1320x900" if theme.mint() else "1100x880")
+        if theme.mint():          # roomier, but never taller than the screen
+            self.geometry(f"1320x{max(760, min(1020, self.winfo_screenheight() - 90))}")
+        else:
+            self.geometry("1100x880")
         self.minsize(1040 if theme.mint() else 860, 640)
         self._restarting = False
         self.events = queue.Queue()
@@ -216,34 +219,85 @@ class App(BaseTk):
                 "speakers": self.v_spk.get() and speakers.available(), "num_speakers": self._num_speakers()}
 
     # ------------------------------------------------------------ layout
-    NAV = (("🎙   Transcribe", 0), ("🌐   Translate", 1), ("📝   Summary", 2), ("💬   Chat", 3))
+    # (emoji used when there's no icon font, icon, text, tab)
+    NAV = (("🎙", "mic", "Transcribe", 0), ("🌐", "translate", "Translate", 1), ("📝", "summary", "Summary", 2),
+           ("💬", "chat", "Chat", 3))
+
+    def _ic(self, w, name, key="muted", size=16, text=None, emoji=""):
+        """Fresh Mint: put a line icon (coloured from the palette) on a button / label, remembered so it can be
+        recoloured for light / dark. Without an icon font the text gets an emoji instead."""
+        from . import mint
+        img = mint.icon(name, size, self.pal.get(key, key))
+        if img is None:
+            if text is not None:
+                w.configure(text=(emoji + "   " if emoji else "") + text)
+            return
+        if text is not None:
+            w.configure(text="  " + text)
+        w.configure(image=img, compound="left")
+        self._icons = [x for x in getattr(self, "_icons", []) if x[0] is not w] + [(w, name, key, size)]
+
+    def _recolor_icons(self):
+        from . import mint
+        for w, name, key, size in getattr(self, "_icons", []):
+            img = mint.icon(name, size, self.pal.get(key, key))
+            try:
+                if img is not None:
+                    w.configure(image=img)
+            except tk.TclError:
+                pass
 
     def _sidebar(self):
         """Fresh Mint: the tabs and tools in a menu on the left."""
-        side = ttk.Frame(self, style="Side.TFrame", padding=(12, 16, 12, 14), width=220)
+        from . import mint
+        side = ttk.Frame(self, style="Side.TFrame", padding=(14, 18, 14, 14), width=230)
         side.pack(side="left", fill="y")
         ttk.Frame(self, style="SideLine.TFrame", width=1).pack(side="left", fill="y")
         brand = ttk.Frame(side, style="Side.TFrame")
-        brand.pack(fill="x", pady=(0, 22), padx=4)
-        ttk.Label(brand, text="🎙", style="Logo.TLabel").pack(side="left")
+        brand.pack(fill="x", pady=(0, 24), padx=6)
+        self.logo_lbl = ttk.Label(brand, style="Logo.TLabel")
+        self.logo_lbl.pack(side="left")
         ttk.Label(brand, text=APP_NAME, style="Brand.TLabel").pack(side="left", padx=(10, 0))
         self.nav = []
-        for text, i in self.NAV:
+        for emoji, ic, text, i in self.NAV:
             b = ttk.Button(side, text=text, style="Nav.TButton", command=lambda i=i: self.nb.select(i))
             b.pack(fill="x", pady=2)
+            self._ic(b, ic, "muted", 17, text, emoji)
             self.nav.append(b)
         # tools at the bottom (packed from the bottom up)
         self.theme_btn = ttk.Button(side, style="Tool.TButton", command=self.toggle_theme)
-        ttk.Button(side, text="🎨   Theme…", style="Tool.TButton", command=self.open_theme).pack(side="bottom", fill="x",
-                                                                                              pady=1)
+        tb = ttk.Button(side, style="Tool.TButton", command=self.open_theme)
+        tb.pack(side="bottom", fill="x", pady=1)
+        self._ic(tb, "theme", "muted", 16, "Theme…", "🎨")
         self.theme_btn.pack(side="bottom", fill="x", pady=1)
-        self.update_btn = ttk.Button(side, text="🔄   Check for updates", style="Tool.TButton", command=self.open_updates)
+        self.update_btn = ttk.Button(side, style="Tool.TButton", command=self.open_updates)
         self.update_btn.pack(side="bottom", fill="x", pady=1)
-        self.wifi_btn = ttk.Button(side, text="📶   Share via Wi-Fi", style="Tool.TButton", command=self.open_wifi)
+        self._ic(self.update_btn, "update", "muted", 16, "Check for updates", "🔄")
+        self.wifi_btn = ttk.Button(side, style="Tool.TButton", command=self.open_wifi)
         self.wifi_btn.pack(side="bottom", fill="x", pady=1)
-        ttk.Button(side, text="📦   Models…", style="Tool.TButton", command=self.open_models).pack(side="bottom",
-                                                                                                fill="x", pady=1)
-        ttk.Frame(side, style="SideLine.TFrame", height=1).pack(side="bottom", fill="x", pady=(0, 10))
+        self._ic(self.wifi_btn, "wifi", "muted", 16, "Share via Wi-Fi", "📶")
+        mb = ttk.Button(side, style="Tool.TButton", command=self.open_models)
+        mb.pack(side="bottom", fill="x", pady=1)
+        self._ic(mb, "models", "muted", 16, "Models…", "📦")
+        ttk.Frame(side, style="SideLine.TFrame", height=1).pack(side="bottom", fill="x", pady=(0, 12))
+        self._mint_badges()
+
+    def _mint_badges(self):
+        """The logo (white microphone on mint) and the shield next to the title, drawn for light / dark."""
+        from . import mint
+        p = self.pal
+        lg = mint.badge("mic", 36, "#ffffff", p["accent"], p["card"], 11)
+        if lg is not None:
+            self.logo_lbl.configure(image=lg, text="")
+        else:
+            self.logo_lbl.configure(text="🎙")
+        if getattr(self, "shield_lbl", None) is not None:
+            sh = mint.badge("shield", 44, p["accent"], p["accent2"], p["bg"], 14)
+            if sh is not None:
+                self.shield_lbl.configure(image=sh)
+        if getattr(self, "device_lbl", None) is not None:
+            dot = mint.dot(p["accent"], p["accent2"])
+            self.device_lbl.configure(image=dot, compound="left")
 
     def _nav_ui(self):
         if not getattr(self, "nav", None):
@@ -252,24 +306,30 @@ class App(BaseTk):
             cur = self.nb.index("current")
         except tk.TclError:
             return
-        for b, (_t, i) in zip(self.nav, self.NAV):
-            b.configure(style="NavOn.TButton" if i == cur else "Nav.TButton")
+        for b, (emoji, ic, text, i) in zip(self.nav, self.NAV):
+            on = i == cur
+            b.configure(style="NavOn.TButton" if on else "Nav.TButton")
+            self._ic(b, ic, "accent_fg" if on else "muted", 17)
 
     def _build(self):
         mint = theme.mint()
         if mint:
             self._sidebar()
-        top = ttk.Frame(self, padding=(20, 16, 20, 0) if mint else (12, 10, 12, 0))
+        top = ttk.Frame(self, padding=(24, 18, 24, 0) if mint else (12, 10, 12, 0),
+                        style="Page.TFrame" if mint else "TFrame")
         top.pack(fill="x")
         if not mint:
             self.theme_btn = ttk.Button(top, command=self.toggle_theme, width=11)
             self.theme_btn.pack(side="left", padx=(0, 6))
             ttk.Button(top, text="Theme…", command=self.open_theme).pack(side="left", padx=(0, 10))
+        else:
+            self.shield_lbl = ttk.Label(top, style="Badge.TLabel")
+            self.shield_lbl.pack(side="left", padx=(0, 14))
         ttk.Label(top, text="Offline transcription", style="Hero.TLabel" if mint else "Title.TLabel").pack(
             side="left")
-        right = ttk.Frame(top)
+        right = ttk.Frame(top, style="Page.TFrame" if mint else "TFrame")
         right.pack(side="right")
-        btns = ttk.Frame(right)
+        btns = ttk.Frame(right, style="Page.TFrame" if mint else "TFrame")
         btns.pack(anchor="e")
         if not mint:
             self.update_btn = ttk.Button(btns, text="Check for updates", command=self.open_updates)
@@ -282,11 +342,13 @@ class App(BaseTk):
                                     style="Pill.TLabel" if mint else "Muted.TLabel")
         if mint:
             self.device_lbl.pack(side="right")
+            self._mint_badges()
         else:
             self.device_lbl.pack(anchor="e", pady=(4, 0))
         self.warn_lbl = ttk.Label(self, style="Warn.TLabel", wraplength=900, justify="left")
         # reminder: files people uploaded over Wi-Fi are still on this PC
-        wb = self.wifi_note = ttk.Frame(self, padding=(12, 6, 12, 0))
+        wb = self.wifi_note = ttk.Frame(self, padding=(24, 6, 24, 0) if mint else (12, 6, 12, 0),
+                                        style="Page.TFrame" if mint else "TFrame")
         self.wifi_note_lbl = ttk.Label(wb, style="Warn.TLabel")
         self.wifi_note_lbl.pack(side="left")
         ttk.Button(wb, text="Hide", command=self._hide_wifi_note).pack(side="right")
@@ -296,10 +358,19 @@ class App(BaseTk):
 
         # three tabs: Transcribe (the original window), Translate, Summary
         self.nb = ttk.Notebook(self, style="Side.TNotebook") if mint else ttk.Notebook(self)
-        self.nb.pack(fill="both", expand=True, padx=(10, 8) if mint else 8, pady=(8, 0))
-        tab = ttk.Frame(self.nb)
+        self.nb.pack(fill="both", expand=True, padx=(24, 24) if mint else 8, pady=(14, 18) if mint else (8, 0))
+        tab = ttk.Frame(self.nb, style="Page.TFrame") if mint else ttk.Frame(self.nb)
         self.nb.add(tab, text="   Transcribe   ")
         self.tab_tr = tab
+        if mint:
+            pf, hdr = self._transcribe_mint(tab)
+        else:
+            pf, hdr = self._transcribe_legacy(tab)
+        self._transcript_box(pf, hdr)
+        self._tabs_after()
+
+    def _transcribe_legacy(self, tab):
+        """The Transcribe tab as it has always looked (Legacy theme)."""
         self.drop = ttk.Label(tab, style="Drop.TLabel", relief="groove", padding=12,
                               text="Drop audio or video files / folders here (or click to browse)\n"
                                    "mp3 · wav · m4a · mp4 · mov · mkv · webm · and more — no length limit")
@@ -399,6 +470,7 @@ class App(BaseTk):
         self.tree.bind("<Double-1>", lambda e: self.toggle_play())
         self.tree.bind("<Delete>", lambda e: self.remove_selected())
         pane.add(tf, weight=1)
+        self._tr_pane = pane
 
         pf = ttk.Frame(pane)
         hdr = ttk.Frame(pf)
@@ -419,6 +491,161 @@ class App(BaseTk):
         ttk.Button(hdr, text="Speakers…", command=self.open_speakers).pack(side="right", padx=(0, 8))
         self.find_btn = ttk.Button(hdr, text="Find", command=self.open_find, width=6)
         self.find_btn.pack(side="right", padx=(0, 12))
+        self._tr_pane = pane
+        return pf, hdr
+
+    def _transcribe_mint(self, tab):
+        """Fresh Mint Transcribe tab: the drop area and the settings card side by side, the file list, the
+        transcript card (with its player) and the Start card, like the Fresh Mint design."""
+        from . import mint
+        # --- top row: drop area | settings card
+        toprow = ttk.Frame(tab, style="Page.TFrame")
+        toprow.pack(fill="x")
+        toprow.columnconfigure(0, weight=5, uniform="top")
+        toprow.columnconfigure(1, weight=7, uniform="top")
+        self.drop = mint.DropZone(toprow, self, self.choose_files)
+        self.drop.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+        if DND_FILES:
+            for w in (self, self.drop):
+                w.drop_target_register(DND_FILES)
+                w.dnd_bind("<<Drop>>", self._on_drop)
+        oc = ttk.Frame(toprow, style="Card.TFrame", padding=(22, 16, 22, 18))
+        oc.grid(row=0, column=1, sticky="nsew")
+        oc.columnconfigure(0, weight=1, uniform="o")
+        oc.columnconfigure(1, weight=1, uniform="o")
+
+        def head(parent, text, ic, **grid):
+            lb = ttk.Label(parent, text=text, style="Head.TLabel")
+            self._ic(lb, ic, "muted", 14, text)
+            lb.grid(sticky="w", **grid)
+            return lb
+        head(oc, "Model", "models", row=0, column=0, pady=(0, 6))
+        head(oc, "Language", "globe", row=0, column=1, padx=(14, 0), pady=(0, 6))
+        self.model_box = ttk.Combobox(oc, textvariable=self.v_model, values=[self._label(k) for k in MODELS],
+                                      state="readonly", width=20)
+        self.model_box.grid(row=1, column=0, sticky="we")
+        self.model_box.bind("<<ComboboxSelected>>", lambda e: self.model_box.selection_clear())
+        lang = ttk.Combobox(oc, textvariable=self.v_lang, values=LANG_CHOICES, width=20)
+        lang.grid(row=1, column=1, sticky="we", padx=(14, 0))
+        searchable(lang, LANG_CHOICES, AUTO)
+        self.lang_box = lang
+
+        ttk.Label(oc, text="Options", style="Head.TLabel").grid(row=2, column=0, sticky="w", pady=(14, 2))
+        r = ttk.Frame(oc)
+        r.grid(row=3, column=0, columnspan=2, sticky="we")
+        ttk.Checkbutton(r, text="Mixed languages", variable=self.v_mixed).pack(side="left")
+        ttk.Label(r, text="(e.g. English + Mandarin)", style="Muted.TLabel").pack(side="left", padx=(6, 0))
+        r = ttk.Frame(oc)
+        r.grid(row=4, column=0, columnspan=2, sticky="we", pady=(4, 0))
+        cb = ttk.Checkbutton(r, text="Speakers (who said what)", variable=self.v_spk, command=self._spk_ui)
+        cb.pack(side="left")
+        if not speakers.available():
+            cb.state(["disabled"])
+        self.nspk_lbl = ttk.Label(r, text="How many")
+        self.nspk_lbl.pack(side="left", padx=(14, 6))
+        self.nspk_box = ttk.Combobox(r, textvariable=self.v_nspk, values=SPK_CHOICES, state="readonly", width=6)
+        self.nspk_box.pack(side="left")
+        self.nspk_box.bind("<<ComboboxSelected>>", lambda e: self.nspk_box.selection_clear())
+        self._spk_ui()
+
+        r = ttk.Frame(oc)
+        r.grid(row=5, column=0, columnspan=2, sticky="we", pady=(14, 6))
+        lb = ttk.Label(r, text="Vocabulary", style="Head.TLabel")
+        self._ic(lb, "book", "muted", 14, "Vocabulary")
+        lb.pack(side="left")
+        ttk.Label(r, text="names, jargon, spellings — optional", style="Small.TLabel").pack(side="left", padx=8)
+        ttk.Entry(oc, textvariable=self.v_hints).grid(row=6, column=0, columnspan=2, sticky="we")
+
+        head(oc, "Save as", "download", row=7, column=0, pady=(14, 6))
+        chips = ttk.Frame(oc)
+        chips.grid(row=8, column=0, columnspan=2, sticky="w")
+        for f in FORMATS:
+            ttk.Checkbutton(chips, text=f.upper(), variable=self.v_fmt[f], style="Chip.TCheckbutton").pack(
+                side="left", padx=(0, 6))
+        head(oc, "Save to", "folder", row=9, column=0, pady=(14, 6))
+        r = ttk.Frame(oc)
+        r.grid(row=10, column=0, columnspan=2, sticky="we")
+        self.export_btn = ttk.Button(r, text="Export", command=self.export, style="Accent.TButton")
+        self.export_btn.pack(side="right")
+        ttk.Button(r, text="Open folder", command=self.open_folder).pack(side="right", padx=6)
+        ttk.Button(r, text="Save to…", command=self.choose_outdir).pack(side="right")
+        self.outdir_lbl = ttk.Label(r, style="Muted.TLabel")
+        self.outdir_lbl.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        # --- the Start card at the bottom
+        rc = ttk.Frame(tab, style="Card.TFrame", padding=(22, 14, 22, 16))
+        rc.pack(side="bottom", fill="x", pady=(14, 0))
+        row = ttk.Frame(rc)
+        row.pack(fill="x")
+        self.start_btn = ttk.Button(row, text="Start", command=self.start, style="Accent.TButton", width=10)
+        self.start_btn.pack(side="right")
+        self.reset_btn = ttk.Button(row, text="Reset save folder", command=self.reset_outdir, style="Ghost.TButton")
+        self.reset_btn.pack(side="right", padx=4)
+        ttk.Button(row, text="Clear list", command=self.clear, style="Ghost.TButton").pack(side="right", padx=4)
+        left = ttk.Frame(row)
+        left.pack(side="left", fill="x", expand=True, padx=(0, 16))
+        self.status = ttk.Label(left, text="Drop files, then press Start.", style="Status.TLabel")
+        self.status.pack(fill="x")
+        self.status.bind("<Configure>", lambda e: self.status.configure(wraplength=max(e.width - 4, 100)))
+        self.progress = ttk.Progressbar(left, mode="determinate", maximum=1.0)
+        self.progress.pack(fill="x", pady=(8, 0))
+
+        # --- file list card | transcript card (drag the line between them)
+        pane = ttk.PanedWindow(tab, orient="vertical", style="Page.TPanedwindow")
+        pane.pack(fill="both", expand=True, pady=(14, 0))
+        qc = ttk.Frame(pane, style="Card.TFrame", padding=(10, 8, 10, 10))
+        cols = ("file", "length", "lang", "status", "time")
+        self.tree = ttk.Treeview(qc, columns=cols, show="headings", height=3, selectmode="extended")
+        for c, text, w, anchor in (("file", "FILE", 420, "w"), ("length", "LENGTH", 80, "e"),
+                                   ("lang", "LANGUAGE", 140, "w"), ("status", "STATUS", 170, "w"),
+                                   ("time", "TOOK", 70, "e")):
+            self.tree.heading(c, text=text, anchor=anchor)
+            self.tree.column(c, width=w, anchor=anchor, stretch=(c == "file"))
+        sb = ttk.Scrollbar(qc, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self._show_selected())
+        self.tree.bind("<Double-1>", lambda e: self.toggle_play())
+        self.tree.bind("<Delete>", lambda e: self.remove_selected())
+        pane.add(qc, weight=1)
+
+        pf = ttk.Frame(pane, style="Card.TFrame", padding=(22, 14, 22, 14))
+        hdr = ttk.Frame(pf)
+        hdr.pack(fill="x")
+        self.preview_lbl = ttk.Label(hdr, text="Transcript", style="Title.TLabel")
+        self.preview_lbl.pack(side="left")
+        ttk.Checkbutton(hdr, text="Timestamps", variable=self.v_ts).pack(side="right")
+        self.py_cb = ttk.Checkbutton(hdr, text="Pinyin", variable=self.v_py)
+        self.py_cb.pack(side="right", padx=(14, 14))
+        self.showspk_cb = ttk.Checkbutton(hdr, text="Show speakers", variable=self.v_showspk)
+        self.showspk_cb.pack(side="right")
+        sp = ttk.Button(hdr, command=self.open_speakers)
+        sp.pack(side="right", padx=(0, 14))
+        self._ic(sp, "people", "text", 15, "Speakers…")
+        self.find_btn = ttk.Button(hdr, command=self.open_find)
+        self.find_btn.pack(side="right", padx=(0, 6))
+        self._ic(self.find_btn, "find", "text", 15, "Find")
+        h2 = ttk.Frame(pf)
+        h2.pack(fill="x", pady=(10, 10))
+        self.edit_btn = ttk.Button(h2, command=self.toggle_edit)
+        self.edit_btn.pack(side="left")
+        self._ic(self.edit_btn, "edit", "text", 15, "Edit transcript")
+        self.cancel_edit_btn = ttk.Button(h2, text="Discard edits", command=lambda: self.end_edit(False))
+        cp = ttk.Button(h2, command=self.copy_text)
+        cp.pack(side="left", padx=6)
+        self._ic(cp, "copy", "text", 15, "Copy text")
+        self.mp3_btn = ttk.Button(h2, command=self.save_mp3)
+        self.mp3_btn.pack(side="left")
+        self._ic(self.mp3_btn, "music", "text", 15, "Save audio as MP3")
+        ttk.Frame(pf, style="Line.TFrame", height=1).pack(fill="x", pady=(0, 6))
+        self._tr_pane = pane
+        return pf, h2
+
+    def _transcript_box(self, pf, hdr):
+        """The transcript text, its find bar and the player under it (both themes)."""
+        mint = theme.mint()
+        pane = self._tr_pane
 
         # find bar (Ctrl+F): shown under the header when needed
         fb = self.find_bar = ttk.Frame(pf)
@@ -444,14 +671,15 @@ class App(BaseTk):
         # player bar (like a media player: play/pause, time, seek, volume); the Translate tab has one too
         self.bars = []
         b = self.player_bar(pf, self.toggle_play)
-        b.frame.pack(side="bottom", fill="x", pady=(6, 0))
+        b.frame.pack(side="bottom", fill="x", pady=(10, 0) if mint else (6, 0))
         self.play_btn, self.time_lbl, self.seek = b.play, b.time, b.seek
 
         body = ttk.Frame(pf)
         body.pack(fill="both", expand=True)
-        self.text = tk.Text(body, wrap="word", height=10, font=(theme.TEXT, 11 + theme._S), relief="flat", padx=14, pady=10,
-                            borderwidth=1, highlightthickness=1, spacing1=1, spacing3=1, undo=True,
-                            cursor="arrow")
+        self.text = tk.Text(body, wrap="word", height=10, font=(theme.TEXT, 11 + theme._S), relief="flat",
+                            padx=4 if mint else 14, pady=6 if mint else 10, borderwidth=0 if mint else 1,
+                            highlightthickness=0 if mint else 1, spacing1=3 if mint else 1, spacing3=3 if mint else 1,
+                            undo=True, cursor="arrow")
         tsb = ttk.Scrollbar(body, orient="vertical", command=self.text.yview)
         self.text.configure(yscrollcommand=tsb.set, state="disabled")
         self.text.pack(side="left", fill="both", expand=True)
@@ -475,6 +703,8 @@ class App(BaseTk):
             w.bind("<space>", lambda e: None if self.editing else (self.toggle_play(), "break")[1])
         self._player_ui()
 
+    def _tabs_after(self):
+        mint = theme.mint()
         # Translate + Summary tabs (dltr/tabs.py)
         from .tabs import AiRunner, SummaryTab, TranslateTab
         self.ai = AiRunner(self)
@@ -486,6 +716,9 @@ class App(BaseTk):
         self.names = NameFinder(self)
         self.chat_tab = ChatTab(self.nb, self)
         self.nb.add(self.chat_tab, text="   Chat   ")
+        if mint:
+            for t in (self.trans_tab, self.sum_tab, self.chat_tab):
+                t.configure(style="Card.TFrame", padding=(24, 18, 24, 20))
         if DND_FILES:
             for w in (self.chat_tab, self.chat_tab.pane.text, self.chat_tab.ask):
                 w.drop_target_register(DND_FILES)
@@ -537,7 +770,12 @@ class App(BaseTk):
     def _recolor(self):
         p = self.pal
         if theme.mint():
-            self.theme_btn.configure(text="☀   Light mode" if self.dark else "🌙   Dark mode")
+            self._ic(self.theme_btn, "sun" if self.dark else "moon", "muted", 16,
+                     "Light mode" if self.dark else "Dark mode", "☀" if self.dark else "🌙")
+            self._recolor_icons()
+            self._mint_badges()
+            if hasattr(self, "drop") and hasattr(self.drop, "redraw"):
+                self.drop.redraw()
         else:
             self.theme_btn.configure(text="Light mode" if self.dark else "Dark mode")
         sel = p.get("select", "#cce0ff")
@@ -1428,20 +1666,23 @@ class App(BaseTk):
     def set_wifi_badge(self):
         on = self.sharing is not None
         if theme.mint():
-            self.wifi_btn.configure(text="📶   Wi-Fi sharing: on" if on else "📶   Share via Wi-Fi",
-                                    style="ToolAccent.TButton" if on else "Tool.TButton")
+            self.wifi_btn.configure(style="ToolAccent.TButton" if on else "Tool.TButton")
+            self._ic(self.wifi_btn, "wifi", ("#0b201b" if self.dark else "#ffffff") if on else "muted", 16,
+                     "Wi-Fi sharing: on" if on else "Share via Wi-Fi", "📶")
             return
         self.wifi_btn.configure(text="Wi-Fi sharing: on" if on else "Share via Wi-Fi",
                                 style="Accent.TButton" if on else "TButton")
 
     def set_update_badge(self, version):
-        m = theme.mint()
+        if theme.mint():
+            self.update_btn.configure(style="ToolAccent.TButton" if version else "Tool.TButton")
+            self._ic(self.update_btn, "update", ("#0b201b" if self.dark else "#ffffff") if version else "muted", 16,
+                     f"Update available: {version}" if version else "Check for updates", "🔄")
+            return
         if version:
-            self.update_btn.configure(text=("⬆   " if m else "") + f"Update available: {version}",
-                                      style="ToolAccent.TButton" if m else "Accent.TButton")
+            self.update_btn.configure(text=f"Update available: {version}", style="Accent.TButton")
         else:
-            self.update_btn.configure(text=("🔄   " if m else "") + "Check for updates",
-                                      style="Tool.TButton" if m else "TButton")
+            self.update_btn.configure(text="Check for updates", style="TButton")
 
     def _quiet_update_check(self):
         """At most once a day (unless switched off in Check for updates): if GitHub has a newer version, say so on
@@ -1496,7 +1737,10 @@ class App(BaseTk):
         self.text.mark_set("insert", self.text.index("@0,0"))     # cursor where you were reading
         self.text.focus_set()
         self.edit_btn.configure(text="Save edits", style="Accent.TButton")
-        self.cancel_edit_btn.pack(side="right", padx=(0, 6), before=self.edit_btn)
+        if theme.mint():
+            self.cancel_edit_btn.pack(side="left", padx=(6, 0), after=self.edit_btn)
+        else:
+            self.cancel_edit_btn.pack(side="right", padx=(0, 6), before=self.edit_btn)
         self.preview_lbl.configure(text=f"Editing — {r['file'].name}")
         self._flash("Editing: click into the text and type, like a document. Timestamps and speaker names stay "
                     "as they are. Press Save edits when done.", 20)
@@ -1546,7 +1790,8 @@ class App(BaseTk):
                 self._flash("Edits saved. Press Export to write them to files.")
         self.editing = False
         self.text.configure(cursor="arrow")
-        self.edit_btn.configure(text="Edit transcript", style="TButton")
+        self.edit_btn.configure(text=("  " if theme.mint() and getattr(self, "_icons", None) else "")
+                                     + "Edit transcript", style="TButton")
         self.cancel_edit_btn.pack_forget()
         if not keep:
             self._flash("Edits discarded.")

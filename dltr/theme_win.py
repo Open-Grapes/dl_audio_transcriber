@@ -12,10 +12,9 @@ from .common import APP_NAME
 
 # what each theme looks like (shown in the window)
 INFO = {
-    "mint": ("Soft mint colours, flat rounded-looking buttons and a menu on the left with the tabs and tools. "
-             "The default.", ("#f1f6f4", "#ffffff", "#0f9f7b", "#e2f6ef"), ("#131817", "#1b2120", "#3fd0a8", "#1d3a32")),
-    "legacy": ("The look up to version 1.7: the standard Windows / Mac style, with the tabs and buttons "
-               "across the top.", ("#f0f0f0", "#ffffff", "#205cd6", "#d0d4da"),
+    "mint": ("A fresh, modern look: soft mint colours, rounded cards, switches and a menu on the left with the "
+             "tabs and tools. The default.", ("#f1f6f4", "#ffffff", "#0f9f7b", "#e2f6ef"), ("#131817", "#1b2120", "#3fd0a8", "#1d3a32")),
+    "legacy": ("The original look: the standard Windows / Mac style, with the tabs and buttons across the top.", ("#f0f0f0", "#ffffff", "#205cd6", "#d0d4da"),
                ("#1c1d22", "#26282f", "#3b82f6", "#3a3d46")),
 }
 

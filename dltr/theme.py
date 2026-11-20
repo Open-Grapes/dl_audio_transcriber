@@ -1,7 +1,8 @@
 """The app's looks ("themes"), each in light and dark.
 
 Legacy: light uses the native Windows / Mac style, dark uses 'clam' recoloured (the look up to 1.7).
-Fresh Mint (the default from 1.8): soft mint colours, flat buttons and a sidebar menu, light or dark.
+Fresh Mint (the default from 1.8): soft mint colours, rounded cards, pill buttons, switches, the Nunito font
+and a sidebar menu, light or dark. Its drawn pieces live in mint.py.
 The theme is chosen at start-up (it changes the layout), so switching it restarts the app; light / dark
 switches straight away."""
 
@@ -39,7 +40,9 @@ MINT_LIGHT = {
     "muted": "#677a75", "faint": "#98a8a3", "line": "#d5e2dd", "accent": "#0f9f7b", "accent2": "#e2f6ef",
     "accent_hi": "#14b88f", "accent_lo": "#0b8667", "accent_fg": "#0b6b53", "hover": "#dcebe5",
     "pressed": "#cfe4dc", "select": "#bfe8da", "thumb": "#c3d3cd", "thumb_hi": "#a8bdb5", "grip": "#7f9690",
-    "sash": "#dfe9e5", "coral": "#c4542f", "coral_bg": "#ffe6dc",
+    "sash": "#f1f6f4", "coral": "#c4542f", "coral_bg": "#ffe6dc", "coral_bg_hi": "#ffd7c8",
+    "fill": "#f1f6f4", "track_off": "#d3dedb", "track": "#dde8e4", "card_line": "#e6efeb",
+    "drop": "#f4fbf8", "drop_hot": "#e9f7f1", "drop_line": "#9fd8c5", "wave": "#9fdcc8",
     "tags": {"RUN": "#2f5bd3", "DONE": "#0b8667", "FAIL": "#c62828", "WAIT": "#677a75", "SKIP": "#677a75"},
 }
 MINT_DARK = {
@@ -47,13 +50,34 @@ MINT_DARK = {
     "muted": "#a0aeaa", "faint": "#7d8c88", "line": "#2f3a37", "accent": "#3fd0a8", "accent2": "#1d3a32",
     "accent_hi": "#5fdcb8", "accent_lo": "#2fb592", "accent_fg": "#7fe6c8", "hover": "#26302e",
     "pressed": "#2d3936", "select": "#24534a", "thumb": "#3a4643", "thumb_hi": "#4c5a56", "grip": "#e6ecea",
-    "sash": "#1b2120", "coral": "#ffb59c", "coral_bg": "#4a2a20",
+    "sash": "#131817", "coral": "#ffb59c", "coral_bg": "#4a2a20", "coral_bg_hi": "#5a3428",
+    "fill": "#242c2a", "track_off": "#3a4643", "track": "#2f3a37", "card_line": "#252e2c",
+    "drop": "#172220", "drop_hot": "#1b2a27", "drop_line": "#2f6a5a", "wave": "#2f8f74",
     "tags": {"RUN": "#7aa6ff", "DONE": "#5fdcb8", "FAIL": "#ff7b72", "WAIT": "#a0aeaa", "SKIP": "#a0aeaa"},
 }
 
 THEMES = {"mint": "Fresh Mint", "legacy": "Legacy"}     # key -> name shown in the Theme window
 DEFAULT_THEME = "mint"
-STYLE = DEFAULT_THEME                                    # set once at start-up (gui.App)
+
+
+def _saved_style():
+    try:
+        from .common import load_settings
+        ui = load_settings().get("ui_style")
+    except Exception:
+        ui = None
+    return ui if ui in THEMES else DEFAULT_THEME
+
+
+# The theme is read here, before any window code imports UI, because Fresh Mint uses its own font (Nunito).
+STYLE = _saved_style()
+if STYLE == "mint":
+    try:
+        from . import mint as _mint
+        if _mint.load_fonts():
+            UI = _mint.FONT
+    except Exception:
+        pass
 
 
 def mint():
@@ -70,7 +94,13 @@ def apply(root, dark):
     """Restyle every ttk widget under root. Returns the palette used."""
     p = palette(dark)
     style = ttk.Style(root)
-    if dark or mint():
+    if mint():
+        from . import mint as _mint
+        _mint.use_theme(style, p, dark)
+        _mint.configure(style, p, dark, UI, _S)
+        _finish(root, style, p, dark)
+        return p
+    if dark:
         style.theme_use("clam")
         bg, panel, field, text, line = p["bg"], p["panel"], p["field"], p["text"], p["line"]
         style.configure(".", background=bg, foreground=text, fieldbackground=field, bordercolor=line,
@@ -159,6 +189,11 @@ def apply(root, dark):
         style.map("Stop.TButton", background=[("pressed", "#b91c1c"), ("active", "#ef4444")])
     else:
         style.configure("Stop.TButton", foreground="#c62828", font=(UI, 9 + _S, "bold"))
+    _finish(root, style, p, dark)
+    return p
+
+
+def _finish(root, style, p, dark):
     _sash(style, p, dark)
     # the drop-down list of a combobox is a plain Tk listbox
     for k, v in (("background", p["field"] if dark else "#ffffff"), ("foreground", p["text"]),
@@ -172,7 +207,6 @@ def apply(root, dark):
         except tk.TclError:
             pass
         title_bar(w, dark)
-    return p
 
 
 def _sash(style, p, dark):
@@ -185,7 +219,7 @@ def _sash(style, p, dark):
     except tk.TclError:
         pass
     # the native Windows / Mac look ('vista', 'aqua') draws no grip whatever the style says: draw our own
-    native = style.theme_use() != "clam"
+    native = style.theme_use() not in ("clam", "mint_light", "mint_dark")
     for g in list(_GRIPS):
         g.show(native, grip)
 
@@ -207,7 +241,7 @@ class SashGrip:
         _GRIPS.append(self)
         pw.bind("<Destroy>", lambda e: self in _GRIPS and e.widget is pw and _GRIPS.remove(self), add="+")
         st = ttk.Style(pw)
-        self.show(st.theme_use() != "clam", st.lookup("Sash", "lightcolor") or "#6b7280")
+        self.show(st.theme_use() not in ("clam", "mint_light", "mint_dark"), st.lookup("Sash", "lightcolor") or "#6b7280")
 
     def show(self, on, colour):
         self.on = on

@@ -36,7 +36,8 @@ def _format_row(parent, app, key, choices, default, export_cmd):
     ttk.Label(row, text="Save as").pack(side="left", padx=(0, 6))
     for f in choices:
         vars_[f].trace_add("write", save)
-        ttk.Checkbutton(row, text=f.upper(), variable=vars_[f]).pack(side="left", padx=(0, 6))
+        ttk.Checkbutton(row, text=f.upper(), variable=vars_[f],
+                        style="Chip.TCheckbutton" if theme.mint() else "TCheckbutton").pack(side="left", padx=(0, 6))
     btn = ttk.Button(row, text="Export", style="Accent.TButton", command=export_cmd, width=10)
     btn.pack(side="right")
     ttk.Button(row, text="Save to…", command=app.choose_outdir).pack(side="right", padx=6)

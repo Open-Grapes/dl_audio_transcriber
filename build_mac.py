@@ -55,6 +55,7 @@ def pyinstaller():
        "--name", APP_NAME, "--icon", ICNS, "--osx-bundle-identifier", BUNDLE_ID,
        "--add-data", f"{ROOT / 'assets' / 'icon.png'}:assets",
        "--add-data", f"{ROOT / 'assets' / 'speakers'}:assets/speakers",
+       "--add-data", f"{ROOT / 'assets' / 'fonts'}:assets/fonts",
        "--collect-all", "tkinterdnd2", "--collect-all", "faster_whisper", "--collect-binaries", "ctranslate2",
        "--collect-submodules", "av", "--collect-all", "fpdf", "--collect-all", "uharfbuzz",
        "--collect-submodules", "fontTools", "--collect-all", "sherpa_onnx", "--collect-data", "certifi",

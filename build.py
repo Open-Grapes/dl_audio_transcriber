@@ -111,6 +111,7 @@ def assemble():
     (out / "assets").mkdir(exist_ok=True)
     shutil.copy2(ICON, out / "assets" / "icon.ico")
     shutil.copytree(ROOT / "assets" / "speakers", out / "assets" / "speakers", dirs_exist_ok=True)
+    shutil.copytree(ROOT / "assets" / "fonts", out / "assets" / "fonts", dirs_exist_ok=True)   # Nunito (Fresh Mint)
     shutil.copy2(ROOT / "README.md", out / "README.md")
     z = DIST / RELEASE_ASSET
     z.unlink(missing_ok=True)

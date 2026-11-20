@@ -2,6 +2,13 @@
 Add a section here with every new version."""
 
 HISTORY = """
+## 1.9  (20 Nov 2026)
+- **Fresh Mint, redesigned**: rounded cards, pill buttons, on/off switches, format chips, Lucide line icons and the Nunito font, like the Fresh Mint design
+- **Transcribe** in Fresh Mint: a big drop area next to the settings card, the file list, the transcript card with its player, and a Start card at the bottom
+- Translate, Summary and Chat sit on a rounded card; the player has a round play button and slider knobs
+- Legacy keeps the original look, in light and dark
+- **Mac**: Fresh Mint on the Mac too, with the same Nunito font and line icons (Lucide, included with the app)
+
 ## 1.8  (20 Nov 2026)
 - New look: **Fresh Mint** (light or dark), with the tabs and tools in a menu on the left. It's the new default
 - **Theme…**: choose Fresh Mint or **Legacy** (the look up to 1.7), then Apply. Restart now switches it straight away; your choice is remembered
