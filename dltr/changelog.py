@@ -2,6 +2,25 @@
 Add a section here with every new version."""
 
 HISTORY = """
+## 2.0  (21 Nov 2026)
+- **Fixed**: running a file a second time could stop at 5 % and not respond to Stop. Re-runs work every time now
+- **⟳ Force refresh** at the top: if anything ever seems stuck, it stops everything, starts the background workers afresh and puts the file back in the list, ready for Start
+- **Faster**: switching tabs, light / dark and dragging dividers are much quicker in Fresh Mint, and resizing the window is smooth (it no longer redraws everything at every step)
+- **Updates**: each time the app opens it checks quietly for a new version. Only when there is one does it ask: **Update now** or **Later**
+- **Transcribe** in Fresh Mint: a slim drop strip and one wide settings card, so the transcript gets more room
+- Drag the divider above the transcript all the way up for a big transcript; it's back in its usual place next time the app opens
+- **⤢ Bigger window** for the transcript (the button in the top-right corner of the transcript), with the player (play, position, volume)
+- **English** under each line of the transcript (next to Pinyin), translated offline, also on the Translate tab. Greyed out for English recordings
+- A little more space between sentences (also in the Translate boxes); click empty space in the text to clear the highlight
+- **Pinyin** only for Chinese (simplified, traditional, Cantonese); greyed out for other languages
+- **Chat**: Pinyin and English switches for the questions, answers and suggestions; the buttons always stay in view and a long file name wraps
+- **Summary**: **Import from Transcribe** and **Import from Translate** buttons; ask the AI about the text (e.g. “What should we do next?”): type it under the summary and press Enter or ➤
+- **Translate**: From starts on Auto-detect, and follows the language of an imported recording
+- **Speakers**: How many can now be set to 1
+- The bigger transcript window closes with its own X (or Esc); round option dots have a little space before their words
+- **Mac**: all of the above on the Mac too (the window-resizing speed-up is a Windows fix)
+- Vocabulary box removed (it wasn't needed)
+
 ## 1.9  (20 Nov 2026)
 - **Fresh Mint, redesigned**: rounded cards, pill buttons, on/off switches, format chips, Lucide line icons and the Nunito font, like the Fresh Mint design
 - **Transcribe** in Fresh Mint: a big drop area next to the settings card, the file list, the transcript card with its player, and a Start card at the bottom

@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "dl_transcribe"
-APP_VERSION = "1.9"
+APP_VERSION = "2.0"
 RELEASE_ASSET = "dl_transcribe-windows.zip"
 
 MEDIA_EXT = {

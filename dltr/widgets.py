@@ -226,3 +226,16 @@ def copyable(label, app):
         m.tk_popup(e.x_root, e.y_root)
     for ev in (("<Button-2>", "<Control-Button-1>") if sys.platform == "darwin" else ("<Button-3>",)):
         label.bind(ev, menu)
+
+
+def blank_click(t, e):
+    """True when a click in text widget t landed on empty space (past the end of a line, or below the text)."""
+    try:
+        idx = t.index(f"@{e.x},{e.y}")
+        info = t.dlineinfo(idx)
+    except Exception:
+        return False
+    if not info:
+        return True
+    x, y, w, h, _base = info
+    return e.x > x + w + 2 or e.y > y + h or e.y < y

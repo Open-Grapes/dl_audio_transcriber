@@ -73,7 +73,7 @@ ICONS = {"mic": "\ue720", "translate": "\ue8c1", "summary": "\ue8a5", "chat": "\
          "upload": "\ue898", "shield": "\uea18", "find": "\ue721", "people": "\ue716", "edit": "\ue70f",
          "copy": "\ue8c8", "music": "\uec4f", "video": "\ue714", "folder": "\ue8b7", "download": "\ue896",
          "check": "\ue73e", "globe": "\ue774", "book": "\ue82d", "options": "\ue713", "play": "\ue768",
-         "stop": "\ue71a", "file": "\ue8a5", "save": "\ue74e"}
+         "stop": "\ue71a", "file": "\ue8a5", "save": "\ue74e", "expand": "\ue740"}
 
 
 # the icons in Lucide (bundled, ISC licence: assets/fonts/LUCIDE-LICENSE.txt)
@@ -81,7 +81,7 @@ LUCIDE = {"mic": 0xe118, "translate": 0xe0fe, "summary": 0xe0cc, "chat": 0xe117,
           "update": 0xe145, "moon": 0xe11e, "sun": 0xe178, "theme": 0xe1dd, "upload": 0xe19e, "shield": 0xe1ff,
           "find": 0xe151, "people": 0xe1a4, "edit": 0xe1f9, "copy": 0xe09e, "music": 0xe122, "video": 0xe1a5,
           "folder": 0xe0d7, "download": 0xe0b2, "check": 0xe06c, "globe": 0xe0e8, "book": 0xe05e, "options": 0xe154,
-          "play": 0xe13c, "stop": 0xe167, "file": 0xe0cc, "save": 0xe14d, "chev": 0xe06d}
+          "play": 0xe13c, "stop": 0xe167, "file": 0xe0cc, "save": 0xe14d, "chev": 0xe06d, "expand": 0xe113}
 
 
 def _icon_font():
@@ -261,14 +261,49 @@ def _blank(w, h):
     return Image.new("RGBA", (max(1, w), max(1, h)), (0, 0, 0, 0))
 
 
-def _el(style, name, imgs, border, sticky="nsew", padding=None):
-    """Create an image element once per theme. imgs: normal image, then (state, image) pairs."""
+def _grow(img, border, size):
+    """Stretch a 9-slice picture to `size` (its edges and middle are plain colour, so this looks the same).
+    ttk repeats an image element's middle piece like floor tiles to fill a widget; from a tiny picture that is
+    thousands of draws per card on every redraw (switching tabs, resizing, dragging a divider), which made the
+    window lag. From a big picture it's a handful."""
+    from PIL import Image
+    if isinstance(border, int):
+        border = (border,) * 4
+    l, t, r, b = border
+    w, h = img.size
+    # only stretch along an axis that has edges (a slider track has none top / bottom: its middle isn't plain)
+    W = max(w, size[0]) if l + r else w
+    H = max(h, size[1]) if t + b else h
+    if (W, H) == (w, h) or l + r >= w or t + b >= h:
+        return img
+    out = Image.new(img.mode, (W, H))
+    xs = [(0, l, 0, l), (l, w - r, l, W - r), (w - r, w, W - r, W)]     # (src from, src to, dst from, dst to)
+    ys = [(0, t, 0, t), (t, h - b, t, H - b), (h - b, h, H - b, H)]
+    for sx0, sx1, dx0, dx1 in xs:
+        for sy0, sy1, dy0, dy1 in ys:
+            if sx1 > sx0 and sy1 > sy0 and dx1 > dx0 and dy1 > dy0:
+                piece = img.crop((sx0, sy0, sx1, sy1))
+                out.paste(piece.resize((dx1 - dx0, dy1 - dy0), Image.NEAREST), (dx0, dy0))
+    return out
+
+
+def _el(style, name, imgs, border, sticky="nsew", padding=None, grow=(900, 140)):
+    """Create an image element once per theme. imgs: normal image, then (state, image) pairs (Pillow images or
+    PhotoImages)."""
+    def prep(im):
+        if isinstance(im, tk.PhotoImage):
+            return im
+        if border and grow:
+            im = _grow(im, border, grow)
+        return _photo(im)
     first, *rest = imgs
-    args = [first]
+    nat = first.size if not isinstance(first, tk.PhotoImage) else (first.width(), first.height())
+    args = [prep(first)]
     for st, im in rest:
-        args.append((st, im))
+        args.append((st, prep(im)))
     # padding 0: the widget's own padding decides the size (by default ttk would add the border on top)
-    kw = {"border": border, "sticky": sticky, "padding": 0 if padding is None else padding}
+    kw = {"border": border, "sticky": sticky, "padding": 0 if padding is None else padding,
+          "width": nat[0], "height": nat[1]}      # the size it asks for: the small picture's, not the stretched one
     try:
         style.element_create(name, "image", *args, **kw)
     except tk.TclError:
@@ -290,11 +325,11 @@ def _make_elements(style, p):
     k = _scale()
     R = lambda v: round(v * k)            # noqa: E731
     page, card, fill = p["bg"], p["card"], p["fill"]
-    ph = lambda img: _photo(img)          # noqa: E731
+    ph = lambda img: img                  # noqa: E731   (_el turns them into Tk pictures)
 
     # cards: white rounded boxes with a soft shadow, on the page colour
     c = ph(_rounded(R(48), R(48), R(16), card, page, line=p["card_line"], shadow=R(4)))
-    _el(style, "Card.bg", [c], border=R(20))
+    _el(style, "Card.bg", [c], border=R(20), grow=(1800, 1200))
     style.layout("Card.TFrame", [("Card.bg", {"sticky": "nswe"})])
 
     # pill buttons (corners match the card they sit on)
@@ -410,7 +445,8 @@ def configure(style, p, dark, ui, size_s):
     style.configure("Chip.TCheckbutton", padding=(10, 4), foreground=muted, font=F(9, "bold"))
     style.map("Chip.TCheckbutton", foreground=[("selected", p["accent_fg"])], background=[("active", card)])
     style.configure("TRadiobutton", background=card, indicatorbackground=card, indicatorforeground=text,
-                    upperbordercolor=p["track_off"], lowerbordercolor=p["track_off"], padding=(2, 3))
+                    upperbordercolor=p["track_off"], lowerbordercolor=p["track_off"], padding=(2, 3),
+                    indicatormargin=(0, 2, 8, 2))      # a gap between the dot and its word
     style.map("TRadiobutton", background=[("active", card)],
               indicatorbackground=[("selected", p["accent"]), ("active", p["hover"])],
               indicatorforeground=[("selected", "#ffffff")])
@@ -475,13 +511,30 @@ class DropZone(tk.Canvas):
         super().__init__(parent, highlightthickness=0, bd=0, height=height, cursor="hand2")
         self.app = app
         self.hot = False
-        self.bind("<Configure>", lambda e: self.redraw())
+        self._pending = None
+        self.bind("<Configure>", lambda e: self._later())
         self.bind("<Button-1>", lambda e: on_click())
         self.bind("<Enter>", lambda e: self._hover(True))
         self.bind("<Leave>", lambda e: self._hover(False))
 
+    def _later(self):
+        """Redraw once things settle (while the window is being resized, Tk sends many size changes)."""
+        if self._pending is None:
+            self._pending = self.after_idle(self._now)
+
+    def _now(self):
+        self._pending = None
+        self.redraw()
+
     def _hover(self, on):
         self.hot = on
+        if self.winfo_height() < 120:
+            # the slim strip: only the fill colour changes, no need to draw everything again
+            try:
+                self.itemconfigure("bg", fill=self.app.pal["drop_hot"] if on else self.app.pal["drop"])
+                return
+            except tk.TclError:
+                pass
         self.redraw()
 
     def _rr(self, x0, y0, x1, y1, r, **kw):
@@ -497,9 +550,12 @@ class DropZone(tk.Canvas):
         p = self.app.pal
         self.delete("all")
         w, h = self.winfo_width(), self.winfo_height()
-        if w < 50 or h < 50:
+        if w < 50 or h < 40:
             return
         self.configure(bg=p["bg"])
+        if h < 120:
+            self._strip(p, w, h)
+            return
         self._rr(2, 2, w - 3, h - 3, 18, fill=p["drop_hot"] if self.hot else p["drop"], outline=p["drop_line"],
                  width=2, dash=(7, 5))
         from .theme import _S
@@ -545,3 +601,50 @@ class DropZone(tk.Canvas):
             hh = min(hh, 26)
             self.create_line(x, y + 10 - hh / 2, x, y + 10 + hh / 2, fill=p["wave"], width=bw, capstyle="round")
             x += bw + 3
+
+    def _strip(self, p, w, h):
+        """The slim version: badge, text, file-type chips and sound wave in one row."""
+        import math
+        import tkinter.font as tkfont
+        from .theme import _S
+        ui = FONT if _fonts_ok else ("Segoe UI" if IS_WIN else "Helvetica Neue")
+        self._rr(2, 2, w - 3, h - 3, 16, fill=p["drop_hot"] if self.hot else p["drop"], outline=p["drop_line"],
+                 width=2, dash=(7, 5), tags=("bg",))
+        cy = h / 2
+        s = min(44, h - 24)
+        x0 = 22
+        self._rr(x0, cy - s / 2, x0 + s, cy + s / 2, 12, fill=p["accent"], outline=p["accent"])
+        ic = icon("upload", 20, "#ffffff")
+        if ic is not None:
+            self.create_image(x0 + s / 2, cy, image=ic)
+        else:
+            self.create_text(x0 + s / 2, cy, text="⬆", fill="#ffffff", font=(ui, 16 + _S))
+        tx = x0 + s + 16
+        hf = heading(12 + _S, ui)
+        self.create_text(tx, cy - 10, text="Drop audio or video files / folders here", fill=p["text"], font=hf,
+                         anchor="w")
+        self.create_text(tx, cy + 12, text="or click to browse  ·  no length limit", fill=p["muted"],
+                         font=(ui, 10 + _S), anchor="w")
+        text_end = tx + max(tkfont.Font(font=hf).measure("Drop audio or video files / folders here"),
+                            tkfont.Font(family=ui, size=10 + _S).measure("or click to browse  ·  no length limit"))
+        # the sound wave at the right end, the type chips before it (as many as fit)
+        n, bw = 16, 3
+        wave_w = n * (bw + 3)
+        x = w - 24 - wave_w
+        if x > text_end + 40:
+            for i in range(n):
+                hh = min(6 + round(abs(math.sin(i * 1.7) * 12 + math.sin(i * .6) * 6)), min(26, h - 30))
+                self.create_line(x, cy - hh / 2, x, cy + hh / 2, fill=p["wave"], width=bw, capstyle="round")
+                x += bw + 3
+            right = w - 24 - wave_w - 24
+        else:
+            right = w - 24
+        f = tkfont.Font(family=ui, size=9 + _S)
+        chips = [(t, f.measure(t) + 22) for t in self.TYPES]
+        while chips and sum(c for _, c in chips) + 6 * (len(chips) - 1) > right - text_end - 32:
+            chips.pop(-2 if len(chips) > 1 else -1)          # drop types from the end, keep "+ more"
+        x = right - (sum(c for _, c in chips) + 6 * (len(chips) - 1))
+        for t, cwid in chips:
+            self._rr(x, cy - 12, x + cwid, cy + 12, 12, fill=p["card"], outline=p["line"])
+            self.create_text(x + cwid / 2, cy, text=t, fill=p["muted"], font=(ui, 9 + _S))
+            x += cwid + 6

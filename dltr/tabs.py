@@ -142,7 +142,7 @@ class AiRunner:
         if self.wk is None or self.wk.proc is None or not self.wk.proc.is_alive():
             self.wk = Worker(lambda *a: self.app.events.put(("ai",) + a))
         self.owner = owner
-        self.bg = all(j["kind"] in self.BACKGROUND for j in jobs)
+        self.bg = all(j["kind"] in self.BACKGROUND or j.get("bg") for j in jobs)
         for j in jobs:
             self.wk.submit(j)
 
@@ -255,7 +255,11 @@ class _Pane(ttk.Frame):
         t.tag_configure("hint", foreground=p["faint"])
         t.tag_configure("pair", background="#2f3b52" if dark else "#fff3b0")
         t.tag_configure("h", foreground=p["accent"], font=(UI, 12 + theme._S, "bold"), spacing1=8, spacing3=2)
-        t.tag_configure("py", foreground=p["muted"], font=(UI, 10 + theme._S), spacing3=8)
+        t.tag_configure("py", foreground=p["muted"], font=(UI, 10 + theme._S), spacing1=2, spacing3=3)
+        t.tag_configure("en", foreground=p["muted"], font=(theme.TEXT, 10 + theme._S, "italic"), spacing1=2,
+                        spacing3=3)
+        t.tag_configure("gap", spacing3=12)
+        t.tag_raise("gap")
         t.tag_raise("sel")
 
     def show(self, res, timestamps, editable=False):
@@ -265,6 +269,17 @@ class _Pane(ttk.Frame):
         ts = timestamps and not res.get("no_times")
         j = " " if ts else ("" if res.get("language") in engine.CJK else " ")
         want_py = self.app.v_py.get()
+        lang = res.get("language") or res.get("spoken_language")
+        want_en = self.app.v_en.get() and res.get("task") != "translate" or (
+            self.app.v_en.get() and lang and lang != "en")
+        from . import english
+        if want_en:
+            todo = [s["text"] for s in res.get("segments") or [] if english.needs_english(s["text"], lang)]
+            hint = langs.from_iso(lang) if lang else None
+            if hint == "zho_Hans" and todo:
+                hint = langs.chinese_variant(" ".join(todo[:50]))
+            if todo:
+                self.app.english.want(todo, hint)
         idx = 0
         for pi, (name, para) in enumerate(engine.labelled(res)):
             if pi:
@@ -274,16 +289,23 @@ class _Pane(ttk.Frame):
             prev_py = False
             for k, s in enumerate(para):
                 txt = s["text"]
-                py = want_py and pinyin.has_han(txt)
+                py = want_py and pinyin.is_chinese(txt)
+                en = None
+                if want_en and txt and english.needs_english(txt, lang):
+                    en = self.app.english.get(txt) or "…"
+                lines = py or bool(en)
                 if k:
-                    t.insert("end", "\n" if (py or prev_py or ts) else j)   # times / pinyin: a line each
+                    t.insert("end", "\n" if (lines or prev_py or ts) else j)   # times / pinyin: a line each
                 tag = f"t{s.get('_i', idx)}"
-                if ts:
-                    t.insert("end", f"({fmt_hms(s['start'])}){NBSP}", ("ts", tag))
-                t.insert("end", txt if txt else "…", (tag,) + (() if txt else ("hint",)))
+                gap = ("gap",) if (lines or ts) else ()
+                if ts:   # a line's spacing comes from its first character: the time carries the gap too
+                    t.insert("end", f"({fmt_hms(s['start'])}){NBSP}", ("ts", tag) + (() if lines else gap))
+                t.insert("end", txt if txt else "…", (tag,) + (() if txt else ("hint",)) + (() if lines else gap))
                 if py:
-                    t.insert("end", "\n" + pinyin.line(txt), ("py", tag))
-                prev_py = py
+                    t.insert("end", "\n" + pinyin.line(txt), ("py", tag) + (() if en else gap))
+                if en:
+                    t.insert("end", "\n" + en, ("en", tag) + gap)
+                prev_py = lines
                 idx += 1
         t.configure(state="normal" if editable else "disabled")
         if self.on_change:
@@ -330,7 +352,8 @@ class TranslateTab(ttk.Frame):
         self.running = False
         self.now = None
         self._redraw = None
-        self.v_src = tk.StringVar(value=s.get("tr_src") if s.get("tr_src") in SRC_CHOICES else AUTO)
+        # From: Auto-detect until there's something to translate (an imported recording sets its language)
+        self.v_src = tk.StringVar(value=AUTO)
         tgt = s.get("tr_tgt", "eng_Latn")
         self.v_tgt = tk.StringVar(value=langs.choice(tgt if tgt in langs.NLLB else "eng_Latn"))
         self.v_eng = tk.StringVar(value=ENGINES.get(s.get("tr_engine"), ENGINES["auto"]))
@@ -383,7 +406,9 @@ class TranslateTab(ttk.Frame):
         for p in (self.top, self.bot):
             p.on_change = self.find.refresh
         ttk.Checkbutton(self.bot.hdr, text="Show timestamps", variable=app.v_ts).pack(side="right", padx=10)
-        ttk.Checkbutton(self.bot.hdr, text="Pinyin", variable=app.v_py).pack(side="right")
+        ttk.Checkbutton(self.bot.hdr, text="English", variable=app.v_en).pack(side="right", padx=(0, 10))
+        ttk.Checkbutton(self.bot.hdr, text="Pinyin", variable=app.v_py).pack(side="right", padx=(0, 10))
+        app.english.listeners.append(lambda: app.v_en.get() and not self.running and self.render())
         for p in (self.top, self.bot):
             p.text.bind("<ButtonRelease-1>", self._click)
         self.top.seg_text = lambda i: self._seg_text(False, i)
@@ -408,7 +433,7 @@ class TranslateTab(ttk.Frame):
     # ------------------------------------------------------------ helpers
     def _save(self):
         s = self.app.s
-        s["tr_src"] = self.v_src.get() if self.v_src.get() in SRC_CHOICES else AUTO
+        s.pop("tr_src", None)                 # not remembered: every start is Auto-detect
         s["tr_tgt"] = langs.from_choice(self.v_tgt.get()) or "eng_Latn"
         s["tr_engine"] = next((k for k, v in ENGINES.items() if v == self.v_eng.get()), "auto")
         self.app._save()
@@ -848,6 +873,8 @@ class TranslateTab(ttk.Frame):
         if self.running:
             return
         self.src, self.trans, self.result, self.now = None, [], None, None
+        self.v_src.set(AUTO)
+        self._from_import = False
         self.top.text.configure(state="normal")
         self.top.title.configure(text="Original")
         self.bot.title.configure(text="Translation")
@@ -971,7 +998,15 @@ class TranslateTab(ttk.Frame):
     # ------------------------------------------------------------ click, play, follow
     def _click(self, e):
         w = e.widget
-        if w.tag_ranges("sel") or (self.src and self.src.get("editing")):
+        if self.src and self.src.get("editing"):
+            return
+        from .widgets import blank_click
+        if blank_click(w, e):                 # empty space: clear the highlight
+            self.now = None
+            self.top.mark(None)
+            self.bot.mark(None)
+            return
+        if w.tag_ranges("sel"):
             return
         p = self.top if w is self.top.text else self.bot
         i = p.seg_at(e)
@@ -1135,10 +1170,16 @@ class SummaryTab(ttk.Frame):
 
         r2 = ttk.Frame(self)
         r2.pack(fill="x", pady=(10, 0))
-        self.src_lbl = ttk.Label(r2, style="Muted.TLabel")
-        self.src_lbl.pack(side="left", fill="x", expand=True)
+        # bring the text in from the other tabs in one click (also when the box was edited or emptied)
+        ttk.Button(r2, text="Import from Transcribe", command=lambda: self.import_from("transcript")).pack(
+            side="left")
+        ttk.Button(r2, text="Import from Translate", command=lambda: self.import_from("translation")).pack(
+            side="left", padx=(6, 14))
         self.go = ttk.Button(r2, text="Summarise", style="Accent.TButton", command=self.summarize, width=12)
         self.go.pack(side="right")
+        self.src_lbl = ttk.Label(r2, style="Muted.TLabel")
+        self.src_lbl.pack(side="left", fill="x", expand=True)
+        self.src_lbl.bind("<Configure>", lambda e: self.src_lbl.configure(wraplength=max(e.width - 4, 120)))
         self.progress = ttk.Progressbar(self, mode="determinate", maximum=1.0)
         self.progress.pack(fill="x", pady=(10, 0))
 
@@ -1152,6 +1193,25 @@ class SummaryTab(ttk.Frame):
         theme.SashGrip(split)
         self._filled = None
         self.paste.text.configure(state="normal", cursor="xterm", height=8)
+        # ask the AI about the text (or the summary): type, then Enter or the > button
+        self.qa = []                    # [(question, answer)] asked here, shown under the summary
+        self._partial = None
+        ask = ttk.Frame(self.out)
+        ask.pack(side="bottom", fill="x", pady=(8, 2))
+        self.ask_btn = ttk.Button(ask, text="➤", style="Accent.TButton", width=3, command=self.ask)
+        self.ask_btn.pack(side="right", padx=(8, 0))
+        self.v_ask = tk.StringVar()
+        self.ask_ent = ttk.Entry(ask, textvariable=self.v_ask)
+        self.ask_ent.pack(side="left", fill="x", expand=True, ipady=3)
+        self._ask_ph = False
+        self.ask_ent.bind("<Return>", lambda e: (self.ask(), "break")[1])
+        self.ask_ent.bind("<KP_Enter>", lambda e: (self.ask(), "break")[1])
+        self.ask_ent.bind("<FocusIn>", lambda e: self._ask_hint(False))
+        self.ask_ent.bind("<FocusOut>", lambda e: self._ask_hint(True))
+        self._ask_hint(True)
+        # the summary text box sits above the ask row (packed after it, so the row always stays in view)
+        self.out.text.master.pack_forget()
+        self.out.text.master.pack(fill="both", expand=True)
         ttk.Button(self.out.hdr, text="Copy", command=self.copy).pack(side="right")
         self.find = FindBar(self, [self.out.text])
         self.find.place_fn = lambda: self.find.pack(fill="x", pady=(8, 0), before=split)
@@ -1169,6 +1229,85 @@ class SummaryTab(ttk.Frame):
                          "language you pick.")
         self._source_ui()
 
+    ASK_HINT = "Ask the AI about this text, e.g. “What should we do next?”  (Enter or ➤ sends)"
+
+    def _ask_hint(self, show):
+        if show and not self.v_ask.get().strip() and self.focus_get() is not self.ask_ent:
+            self.v_ask.set(self.ASK_HINT)
+            self.ask_ent.configure(style="Hint.TEntry")
+            self._ask_ph = True
+        elif not show and self._ask_ph:
+            self.v_ask.set("")
+            self.ask_ent.configure(style="TEntry")
+            self._ask_ph = False
+
+    def ask(self):
+        """Answer a question about the text being summarised (and the summary), under the summary."""
+        app = self.app
+        if self.running:
+            return
+        q = "" if self._ask_ph else self.v_ask.get().strip()
+        if not q:
+            self.ask_ent.focus_set()
+            return
+        text = self._box().strip()
+        r = self._transcript() if self.v_from.get() == "transcript" and (self._filled or "").strip() else None
+        if not text and not r and not self.text:
+            self._flash("There's no text yet: pick a transcript or paste some text below, then ask.")
+            return
+        if not app.ai.free_for(self):
+            self._flash(f"The {app.ai.label()} tab is still using the AI; nothing asked.")
+            return
+        from . import ai
+        need = ensure_models(app, [ai.AI_KEY], "Asking the AI")
+        if need is None:
+            self._flash("Model not downloaded — nothing asked.")
+            return
+        if r is not None and text == (self._filled or "").strip():
+            from .chat import build_ctx
+            ctx = build_ctx(app, r)
+        else:
+            ctx = {"title": self.stem if self.stem != "summary" else "Text", "speakers": [], "translation": None,
+                   "lines": [[None, "", ln] for ln in text.splitlines() if ln.strip()], "summary": None}
+        if self.text:
+            ctx["summary"] = engine.summary_plain(self.text)
+        self.v_ask.set("")
+        self._pending_q = q
+        self._partial = ""
+        self._render_qa()
+        jobs = [{"kind": "download", "id": "ai-dl", "models": need}] if need else []
+        jobs.append({"kind": "chat", "id": "sumask", "ctx": ctx, "history": self.qa[-4:], "question": q})
+        self._busy(True)
+        self.progress["value"] = 0.05
+        self._flash("Downloading the AI model (one time) …" if need else "Thinking …")
+        app.ai.run(self, jobs)
+
+    def _render_qa(self):
+        """The summary, then the questions asked here with their answers."""
+        t = self.out.text
+        if self.text:
+            self._show(self.text)
+        else:
+            t.configure(state="normal")
+            t.delete("1.0", "end")
+            t.configure(state="disabled")
+        t.configure(state="normal")
+        items = list(self.qa)
+        if self._partial is not None:
+            items.append((self._pending_q, (self._partial or "") + " ▍"))
+        for q, a in items:
+            if t.get("1.0", "end").strip():
+                t.insert("end", "\n")
+            t.insert("end", q + "\n", ("h",))
+            for ln in (a or "").splitlines():
+                s = ln.rstrip()
+                if re.match(r"^\s*[-*•]\s+", s):
+                    t.insert("end", "  •  " + re.sub(r"^\s*[-*•]\s+", "", s).replace("**", "") + "\n")
+                else:
+                    t.insert("end", re.sub(r"^#{1,4}\s*", "", s).replace("**", "") + "\n")
+        t.configure(state="disabled")
+        t.see("end")
+
     def _save(self):
         self.app.s["sum_lang"] = langs.from_choice(self.v_lang.get()) or "eng_Latn"
         self.app.s["sum_detail"] = next((k for k, v in DETAIL.items() if v == self.v_detail.get()), "normal")
@@ -1177,6 +1316,7 @@ class SummaryTab(ttk.Frame):
     def recolor(self, p, dark):
         self.paste.recolor(p, dark)
         self.out.recolor(p, dark)
+        ttk.Style(self).configure("Hint.TEntry", foreground=p["faint"])
         self.find.recolor(dark)
 
     def _transcript(self):
@@ -1241,6 +1381,24 @@ class SummaryTab(ttk.Frame):
     def refresh(self):
         self._source_ui(switched=False)
 
+    def import_from(self, f):
+        """Import from Transcribe / Translate: put that text in the box (replacing what's there)."""
+        if self.running:
+            return
+        if self.v_from.get() == "paste":
+            self._paste_text = self._box()
+        self.v_from.set(f)
+        self._shown = f
+        text = self._source_text(f)
+        self._set_box(text or "")
+        self._filled = text or ""
+        self._source_ui(switched=False)
+        if not text:
+            self._flash("Nothing to import yet: transcribe a file first." if f == "transcript" else
+                        "Nothing to import yet: translate something on the Translate tab first.")
+        else:
+            self._flash("Imported. Edit the text below if you like, then press Summarise or ask a question.")
+
     def summarize(self):
         app = self.app
         if self.running:
@@ -1290,12 +1448,19 @@ class SummaryTab(ttk.Frame):
     def _busy(self, b):
         self.running = b
         self.go.configure(text="■  Stop" if b else "Summarise", style="Stop.TButton" if b else "Accent.TButton")
+        if hasattr(self, "ask_btn"):
+            self.ask_btn.configure(text="■" if b else "➤", style="Stop.TButton" if b else "Accent.TButton",
+                                   command=self.stop if b else self.ask)
 
     def stop(self):
         if self.app.ai.owner is self:
             self.app.ai.stop()
         self._busy(False)
         self.progress["value"] = 0
+        if self._partial is not None:
+            self.qa.append((self._pending_q, (self._partial or "") + "\n(stopped)"))
+            self._partial = None
+            self._render_qa()
         self._flash("Stopped.")
 
     def _flash(self, msg):
@@ -1311,12 +1476,25 @@ class SummaryTab(ttk.Frame):
             self._flash("AI model downloaded. Summarising …")
         elif kind == "stext":
             self._show(a[1])
+        elif kind == "ctext":
+            self._partial = a[1]
+            self._render_qa()
+        elif kind == "cdone":
+            _jid, ans, took = a
+            self.app.ai.release()
+            self._busy(False)
+            self.progress["value"] = 1.0
+            self.qa.append((self._pending_q, ans))
+            self._partial = None
+            self._render_qa()
+            self._flash(f"Answered in {took:.1f} s. Ask another question, or press Summarise for a summary.")
         elif kind == "sdone":
             _jid, text, took = a
             self.app.ai.release()
             self._busy(False)
             self.progress["value"] = 1.0
             self.text = text
+            self.qa = []                       # a new summary starts a fresh set of questions
             self._show(text)
             self._flash(f"Summary ready ({fmt_hms(took)}). Copy it, or tick the formats below and Export.")
         elif kind in ("fail", "died"):
@@ -1324,7 +1502,12 @@ class SummaryTab(ttk.Frame):
             self.app.ai.stop()
             self._busy(False)
             self.progress["value"] = 0
-            self._flash(f"Summary failed: {msg}")
+            if self._partial is not None:
+                self._partial = None
+                self._render_qa()
+                self._flash(f"Couldn't answer: {msg}")
+            else:
+                self._flash(f"Summary failed: {msg}")
 
     def _show(self, md):
         """Show the summary's simple markdown nicely: headings, bullets, no ** marks."""

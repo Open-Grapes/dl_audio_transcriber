@@ -39,7 +39,7 @@ else:                                 # Mac: plain symbols (\uFE0E = draw as tex
     I_PLAY, I_PAUSE = "\u25B6\uFE0E", "\u23F8\uFE0E"
     I_MUTE, I_VOL = "\U0001F507", ("\U0001F508", "\U0001F509", "\U0001F50A")
 MOD = "Command" if IS_MAC else "Control"     # Cmd+F on the Mac, Ctrl+F on Windows
-SPK_CHOICES = ["Auto"] + [str(n) for n in range(2, 11)]
+SPK_CHOICES = ["Auto"] + [str(n) for n in range(1, 11)]
 
 
 def _size(mb):
@@ -120,22 +120,49 @@ class App(BaseTk):
         self.now_seg = None
         self.dark = self.s.get("theme") == "dark"
         self._vars()
+        from .english import English
+        self.english = English(self)              # English lines under the transcript / chat (on request)
+        self.english.listeners.append(self._en_arrived)
+        self.big = None                           # the bigger transcript window, when open
+        self._py_ok = self._en_ok = False
         self.pal = theme.apply(self, self.dark)
         self._build()
         self._recolor()
         self._refresh_outdir()
-        self.after(100, self._pump)
+        self._pump_job = self.after(100, self._pump)
         self.after(60, lambda: theme.title_bar(self, self.dark))
+        self.after(10, self._no_full_repaint)
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.wk = Worker(self._from_worker)
         self.wk.ensure()           # starts in the background and reports which GPU it found
         self.after(1000, self._tick)
         self.after(200, self._poll_player)
-        self.after(4000, self._quiet_update_check)
+        self.after(2500, self._quiet_update_check)
         self.after(1500, self.refresh_wifi_note, True)
         threading.Thread(target=media.clean_cache, daemon=True).start()
         if files:
             self.after(400, lambda: self.add(files))
+
+    def _no_full_repaint(self):
+        """Windows: Tk's window classes ask for the whole window, every widget in it, to be repainted at each step
+        of a resize. That's what made dragging the window edge lag (about 200 widgets redrawn per step, even the
+        ones that didn't change). Widgets redraw themselves when their own size changes anyway."""
+        if not IS_WIN:
+            return
+        try:
+            import ctypes
+            u = ctypes.windll.user32
+            get, put = u.GetClassLongPtrW, u.SetClassLongPtrW
+            get.restype = put.restype = ctypes.c_ssize_t
+            get.argtypes = [ctypes.c_void_p, ctypes.c_int]
+            put.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+            child = self.winfo_id()
+            for h in (u.GetParent(ctypes.c_void_p(child)), child):     # TkTopLevel and TkChild (every widget)
+                st = get(h, -26)                                           # GCL_STYLE
+                if st & 0x3:
+                    put(h, -26, st & ~0x3)                                 # no CS_HREDRAW / CS_VREDRAW
+        except Exception as e:
+            log(f"repaint style: {e!r}")
 
     # ------------------------------------------------------------ settings
     def _vars(self):
@@ -150,6 +177,7 @@ class App(BaseTk):
         self.v_spk = tk.BooleanVar(value=s.get("speakers", False))
         self.v_showspk = tk.BooleanVar(value=s.get("show_speakers", True))
         self.v_py = tk.BooleanVar(value=s.get("pinyin", False))     # Hanyu Pinyin under Chinese lines
+        self.v_en = tk.BooleanVar(value=s.get("english_lines", False))   # English under each non-English line
         self.v_find = tk.StringVar()
         self.v_nspk = tk.StringVar(value=str(s.get("num_speakers") or "Auto"))
         fm = s.get("formats", ["pdf", "txt", "srt"])
@@ -164,6 +192,7 @@ class App(BaseTk):
         self.v_showspk.trace_add("write", lambda *_: (self._save(), self._render(keep_view=True)))
         self.v_py.trace_add("write", lambda *_: (self._save(), self._render(keep_view=True),
                                                  hasattr(self, "trans_tab") and self.trans_tab.render()))
+        self.v_en.trace_add("write", lambda *_: (self._save(), self._en_toggled()))
 
     @staticmethod
     def _label(key):
@@ -206,6 +235,7 @@ class App(BaseTk):
                       formats=self._formats(), theme="dark" if self.dark else "light",
                       speakers=self.v_spk.get(), num_speakers=self._num_speakers(),
                       show_speakers=self.v_showspk.get(), pinyin=self.v_py.get(),
+                      english_lines=self.v_en.get(),
                       volume=round(self.player.volume, 2))
         save_settings(self.s)
 
@@ -215,7 +245,7 @@ class App(BaseTk):
 
     def _opts(self):
         return {"model": self._model_name(), "language": self._lang_code(), "task": self.v_task.get(),
-                "multilingual": self.v_mixed.get(), "hints": self.v_hints.get(),
+                "multilingual": self.v_mixed.get(), "hints": "",
                 "speakers": self.v_spk.get() and speakers.available(), "num_speakers": self._num_speakers()}
 
     # ------------------------------------------------------------ layout
@@ -268,7 +298,7 @@ class App(BaseTk):
         self.theme_btn = ttk.Button(side, style="Tool.TButton", command=self.toggle_theme)
         tb = ttk.Button(side, style="Tool.TButton", command=self.open_theme)
         tb.pack(side="bottom", fill="x", pady=1)
-        self._ic(tb, "theme", "muted", 16, "Theme…", "🎨")
+        self._ic(tb, "theme", "muted", 16, "Theme", "🎨")
         self.theme_btn.pack(side="bottom", fill="x", pady=1)
         self.update_btn = ttk.Button(side, style="Tool.TButton", command=self.open_updates)
         self.update_btn.pack(side="bottom", fill="x", pady=1)
@@ -278,7 +308,7 @@ class App(BaseTk):
         self._ic(self.wifi_btn, "wifi", "muted", 16, "Share via Wi-Fi", "📶")
         mb = ttk.Button(side, style="Tool.TButton", command=self.open_models)
         mb.pack(side="bottom", fill="x", pady=1)
-        self._ic(mb, "models", "muted", 16, "Models…", "📦")
+        self._ic(mb, "models", "muted", 16, "Models", "📦")
         ttk.Frame(side, style="SideLine.TFrame", height=1).pack(side="bottom", fill="x", pady=(0, 12))
         self._mint_badges()
 
@@ -340,10 +370,13 @@ class App(BaseTk):
         self.stopall_btn = ttk.Button(btns, text="■  Stop all", style="Stop.TButton", command=self.stop_all)
         self.device_lbl = ttk.Label(right if not mint else btns, text="Checking GPU …",
                                     style="Pill.TLabel" if mint else "Muted.TLabel")
+        self.refresh_btn = ttk.Button(btns, text="⟳  Force refresh", command=self.force_refresh)
         if mint:
             self.device_lbl.pack(side="right")
+            self.refresh_btn.pack(side="right", padx=(0, 10))
             self._mint_badges()
         else:
+            self.refresh_btn.pack(side="right", padx=(0, 10))
             self.device_lbl.pack(anchor="e", pady=(4, 0))
         self.warn_lbl = ttk.Label(self, style="Warn.TLabel", wraplength=900, justify="left")
         # reminder: files people uploaded over Wi-Fi are still on this PC
@@ -357,8 +390,12 @@ class App(BaseTk):
         ttk.Button(wb, text="Open folder", command=self._open_wifi_folder).pack(side="right", padx=6)
 
         # three tabs: Transcribe (the original window), Translate, Summary
-        self.nb = ttk.Notebook(self, style="Side.TNotebook") if mint else ttk.Notebook(self)
+        # the page (the tabs) under the header
+        self.body = ttk.Frame(self, style="Page.TFrame" if mint else "TFrame")
+        self.body.pack(fill="both", expand=True)
+        self.nb = ttk.Notebook(self.body, style="Side.TNotebook") if mint else ttk.Notebook(self.body)
         self.nb.pack(fill="both", expand=True, padx=(24, 24) if mint else 8, pady=(14, 18) if mint else (8, 0))
+
         tab = ttk.Frame(self.nb, style="Page.TFrame") if mint else ttk.Frame(self.nb)
         self.nb.add(tab, text="   Transcribe   ")
         self.tab_tr = tab
@@ -415,12 +452,6 @@ class App(BaseTk):
         self.nspk_box.pack(side="left")
         self.nspk_box.bind("<<ComboboxSelected>>", lambda e: self.nspk_box.selection_clear())
         self._spk_ui()
-
-        r4 = ttk.Frame(opt)
-        r4.grid(row=2, column=0, columnspan=4, sticky="we", pady=(8, 0))
-        ttk.Label(r4, text="Vocabulary").pack(side="left", padx=(0, 6))
-        ttk.Entry(r4, textvariable=self.v_hints).pack(side="left", fill="x", expand=True)
-        ttk.Label(r4, text="names, jargon, spellings — optional", style="Small.TLabel").pack(side="left", padx=6)
 
         # save row: formats · where · Open folder · Export
         r3 = ttk.Frame(opt)
@@ -483,7 +514,11 @@ class App(BaseTk):
         self.cancel_edit_btn = ttk.Button(hdr, text="Discard edits", command=lambda: self.end_edit(False))
         self.edit_btn = ttk.Button(hdr, text="Edit transcript", command=self.toggle_edit, width=14)
         self.edit_btn.pack(side="right")
+        self.big_btn = ttk.Button(hdr, text="⤢", width=3, command=self.open_big)
+        self.big_btn.pack(side="right", padx=(8, 0))
         ttk.Checkbutton(hdr, text="Show timestamps", variable=self.v_ts).pack(side="right", padx=(10, 12))
+        self.en_cb = ttk.Checkbutton(hdr, text="English", variable=self.v_en)
+        self.en_cb.pack(side="right", padx=(10, 0))
         self.py_cb = ttk.Checkbutton(hdr, text="Pinyin", variable=self.v_py)
         self.py_cb.pack(side="right", padx=(10, 0))
         self.showspk_cb = ttk.Checkbutton(hdr, text="Show speakers", variable=self.v_showspk)
@@ -495,24 +530,31 @@ class App(BaseTk):
         return pf, hdr
 
     def _transcribe_mint(self, tab):
-        """Fresh Mint Transcribe tab: the drop area and the settings card side by side, the file list, the
-        transcript card (with its player) and the Start card, like the Fresh Mint design."""
+        """Fresh Mint Transcribe tab: a slim drop strip, one wide settings card, the file list, the transcript
+        card (with its player) and the Start card. The divider above the transcript can be dragged all the way up
+        (over the drop strip, settings and file list) for a bigger transcript; it starts in the same place every
+        time the app opens."""
         from . import mint
-        # --- top row: drop area | settings card
-        toprow = ttk.Frame(tab, style="Page.TFrame")
-        toprow.pack(fill="x")
-        toprow.columnconfigure(0, weight=5, uniform="top")
-        toprow.columnconfigure(1, weight=7, uniform="top")
-        self.drop = mint.DropZone(toprow, self, self.choose_files)
-        self.drop.grid(row=0, column=0, sticky="nsew", padx=(0, 16))
+        # the Start card at the bottom (packed first so it always stays in view)
+        self._start_card_mint(tab)
+        pane = ttk.PanedWindow(tab, orient="vertical", style="Page.TPanedwindow")
+        pane.pack(fill="both", expand=True)
+        upper = ttk.Frame(pane, style="Page.TFrame")
+
+        # --- drop strip
+        self.drop = mint.DropZone(upper, self, self.choose_files, height=76)
+        self.drop.pack(fill="x")
         if DND_FILES:
             for w in (self, self.drop):
                 w.drop_target_register(DND_FILES)
                 w.dnd_bind("<<Drop>>", self._on_drop)
-        oc = ttk.Frame(toprow, style="Card.TFrame", padding=(22, 16, 22, 18))
-        oc.grid(row=0, column=1, sticky="nsew")
-        oc.columnconfigure(0, weight=1, uniform="o")
-        oc.columnconfigure(1, weight=1, uniform="o")
+
+        # --- settings card: Model · Language · Save as / Options · Save to
+        oc = ttk.Frame(upper, style="Card.TFrame", padding=(22, 14, 22, 16))
+        oc.pack(fill="x", pady=(14, 0))
+        oc.columnconfigure(0, weight=4, uniform="o")
+        oc.columnconfigure(1, weight=3, uniform="o")
+        oc.columnconfigure(2, weight=5, uniform="o")
 
         def head(parent, text, ic, **grid):
             lb = ttk.Label(parent, text=text, style="Head.TLabel")
@@ -520,59 +562,108 @@ class App(BaseTk):
             lb.grid(sticky="w", **grid)
             return lb
         head(oc, "Model", "models", row=0, column=0, pady=(0, 6))
-        head(oc, "Language", "globe", row=0, column=1, padx=(14, 0), pady=(0, 6))
+        head(oc, "Language", "globe", row=0, column=1, padx=(16, 0), pady=(0, 6))
+        head(oc, "Save as", "download", row=0, column=2, padx=(16, 0), pady=(0, 6))
         self.model_box = ttk.Combobox(oc, textvariable=self.v_model, values=[self._label(k) for k in MODELS],
                                       state="readonly", width=20)
         self.model_box.grid(row=1, column=0, sticky="we")
         self.model_box.bind("<<ComboboxSelected>>", lambda e: self.model_box.selection_clear())
-        lang = ttk.Combobox(oc, textvariable=self.v_lang, values=LANG_CHOICES, width=20)
-        lang.grid(row=1, column=1, sticky="we", padx=(14, 0))
+        lang = ttk.Combobox(oc, textvariable=self.v_lang, values=LANG_CHOICES, width=16)
+        lang.grid(row=1, column=1, sticky="we", padx=(16, 0))
         searchable(lang, LANG_CHOICES, AUTO)
         self.lang_box = lang
+        chips = ttk.Frame(oc)
+        chips.grid(row=1, column=2, sticky="w", padx=(16, 0))
+        for f in FORMATS:
+            ttk.Checkbutton(chips, text=f.upper(), variable=self.v_fmt[f], style="Chip.TCheckbutton").pack(
+                side="left", padx=(0, 6))
 
-        ttk.Label(oc, text="Options", style="Head.TLabel").grid(row=2, column=0, sticky="w", pady=(14, 2))
+        head(oc, "Options", "options", row=2, column=0, pady=(14, 4))
         r = ttk.Frame(oc)
-        r.grid(row=3, column=0, columnspan=2, sticky="we")
+        r.grid(row=3, column=0, columnspan=2, sticky="w")
         ttk.Checkbutton(r, text="Mixed languages", variable=self.v_mixed).pack(side="left")
-        ttk.Label(r, text="(e.g. English + Mandarin)", style="Muted.TLabel").pack(side="left", padx=(6, 0))
-        r = ttk.Frame(oc)
-        r.grid(row=4, column=0, columnspan=2, sticky="we", pady=(4, 0))
         cb = ttk.Checkbutton(r, text="Speakers (who said what)", variable=self.v_spk, command=self._spk_ui)
-        cb.pack(side="left")
+        cb.pack(side="left", padx=(18, 0))
         if not speakers.available():
             cb.state(["disabled"])
         self.nspk_lbl = ttk.Label(r, text="How many")
-        self.nspk_lbl.pack(side="left", padx=(14, 6))
-        self.nspk_box = ttk.Combobox(r, textvariable=self.v_nspk, values=SPK_CHOICES, state="readonly", width=6)
+        self.nspk_lbl.pack(side="left", padx=(12, 6))
+        self.nspk_box = ttk.Combobox(r, textvariable=self.v_nspk, values=SPK_CHOICES, state="readonly", width=5)
         self.nspk_box.pack(side="left")
         self.nspk_box.bind("<<ComboboxSelected>>", lambda e: self.nspk_box.selection_clear())
         self._spk_ui()
 
-        r = ttk.Frame(oc)
-        r.grid(row=5, column=0, columnspan=2, sticky="we", pady=(14, 6))
-        lb = ttk.Label(r, text="Vocabulary", style="Head.TLabel")
-        self._ic(lb, "book", "muted", 14, "Vocabulary")
+        sv = ttk.Frame(oc)
+        sv.grid(row=2, column=2, sticky="we", padx=(16, 0), pady=(14, 4))
+        lb = ttk.Label(sv, text="Save to", style="Head.TLabel")
+        self._ic(lb, "folder", "muted", 14, "Save to")
         lb.pack(side="left")
-        ttk.Label(r, text="names, jargon, spellings — optional", style="Small.TLabel").pack(side="left", padx=8)
-        ttk.Entry(oc, textvariable=self.v_hints).grid(row=6, column=0, columnspan=2, sticky="we")
-
-        head(oc, "Save as", "download", row=7, column=0, pady=(14, 6))
-        chips = ttk.Frame(oc)
-        chips.grid(row=8, column=0, columnspan=2, sticky="w")
-        for f in FORMATS:
-            ttk.Checkbutton(chips, text=f.upper(), variable=self.v_fmt[f], style="Chip.TCheckbutton").pack(
-                side="left", padx=(0, 6))
-        head(oc, "Save to", "folder", row=9, column=0, pady=(14, 6))
+        self.outdir_lbl = ttk.Label(sv, style="Muted.TLabel")
+        self.outdir_lbl.pack(side="left", padx=(10, 0))
         r = ttk.Frame(oc)
-        r.grid(row=10, column=0, columnspan=2, sticky="we")
+        r.grid(row=3, column=2, sticky="w", padx=(16, 0))
+        ttk.Button(r, text="Save to…", command=self.choose_outdir).pack(side="left")
+        ttk.Button(r, text="Open folder", command=self.open_folder).pack(side="left", padx=6)
         self.export_btn = ttk.Button(r, text="Export", command=self.export, style="Accent.TButton")
-        self.export_btn.pack(side="right")
-        ttk.Button(r, text="Open folder", command=self.open_folder).pack(side="right", padx=6)
-        ttk.Button(r, text="Save to…", command=self.choose_outdir).pack(side="right")
-        self.outdir_lbl = ttk.Label(r, style="Muted.TLabel")
-        self.outdir_lbl.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.export_btn.pack(side="left")
 
-        # --- the Start card at the bottom
+        # --- file list card
+        qc = ttk.Frame(upper, style="Card.TFrame", padding=(10, 8, 10, 10))
+        qc.pack(fill="both", expand=True, pady=(14, 0))
+        cols = ("file", "length", "lang", "status", "time")
+        self.tree = ttk.Treeview(qc, columns=cols, show="headings", height=3, selectmode="extended")
+        for c, text, w, anchor in (("file", "FILE", 420, "w"), ("length", "LENGTH", 80, "e"),
+                                   ("lang", "LANGUAGE", 140, "w"), ("status", "STATUS", 170, "w"),
+                                   ("time", "TOOK", 70, "e")):
+            self.tree.heading(c, text=text, anchor=anchor)
+            self.tree.column(c, width=w, anchor=anchor, stretch=(c == "file"))
+        sb = ttk.Scrollbar(qc, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self._show_selected())
+        self.tree.bind("<Double-1>", lambda e: self.toggle_play())
+        self.tree.bind("<Delete>", lambda e: self.remove_selected())
+        pane.add(upper, weight=0)
+
+        # --- transcript card
+        pf = ttk.Frame(pane, style="Card.TFrame", padding=(22, 14, 22, 14))
+        hdr = ttk.Frame(pf)
+        hdr.pack(fill="x")
+        ttk.Checkbutton(hdr, text="Timestamps", variable=self.v_ts).pack(side="right")
+        self.en_cb = ttk.Checkbutton(hdr, text="English", variable=self.v_en)
+        self.en_cb.pack(side="right", padx=(14, 14))
+        self.py_cb = ttk.Checkbutton(hdr, text="Pinyin", variable=self.v_py)
+        self.py_cb.pack(side="right", padx=(14, 0))
+        self.showspk_cb = ttk.Checkbutton(hdr, text="Show speakers", variable=self.v_showspk)
+        self.showspk_cb.pack(side="right")
+        sp = ttk.Button(hdr, command=self.open_speakers)
+        sp.pack(side="right", padx=(0, 14))
+        self._ic(sp, "people", "text", 15, "Speakers…")
+        self.find_btn = ttk.Button(hdr, command=self.open_find)
+        self.find_btn.pack(side="right", padx=(0, 6))
+        self._ic(self.find_btn, "find", "text", 15, "Find")
+        # the title last: the buttons and switches keep their room, a long file name wraps instead
+        self.preview_lbl = ttk.Label(hdr, text="Transcript", style="Title.TLabel", justify="left")
+        self.preview_lbl.pack(side="left", fill="x", expand=True)
+        self.preview_lbl.bind("<Configure>", lambda e: self.preview_lbl.configure(wraplength=max(e.width - 4, 120)))
+        h2 = ttk.Frame(pf)
+        h2.pack(fill="x", pady=(10, 10))
+        self.edit_btn = ttk.Button(h2, command=self.toggle_edit)
+        self.edit_btn.pack(side="left")
+        self._ic(self.edit_btn, "edit", "text", 15, "Edit transcript")
+        self.cancel_edit_btn = ttk.Button(h2, text="Discard edits", command=lambda: self.end_edit(False))
+        cp = ttk.Button(h2, command=self.copy_text)
+        cp.pack(side="left", padx=6)
+        self._ic(cp, "copy", "text", 15, "Copy text")
+        self.mp3_btn = ttk.Button(h2, command=self.save_mp3)
+        self.mp3_btn.pack(side="left")
+        self._ic(self.mp3_btn, "music", "text", 15, "Save audio as MP3")
+        ttk.Frame(pf, style="Line.TFrame", height=1).pack(fill="x", pady=(0, 6))
+        self._tr_pane = pane
+        return pf, h2
+
+    def _start_card_mint(self, tab):
         rc = ttk.Frame(tab, style="Card.TFrame", padding=(22, 14, 22, 16))
         rc.pack(side="bottom", fill="x", pady=(14, 0))
         row = ttk.Frame(rc)
@@ -590,57 +681,6 @@ class App(BaseTk):
         self.progress = ttk.Progressbar(left, mode="determinate", maximum=1.0)
         self.progress.pack(fill="x", pady=(8, 0))
 
-        # --- file list card | transcript card (drag the line between them)
-        pane = ttk.PanedWindow(tab, orient="vertical", style="Page.TPanedwindow")
-        pane.pack(fill="both", expand=True, pady=(14, 0))
-        qc = ttk.Frame(pane, style="Card.TFrame", padding=(10, 8, 10, 10))
-        cols = ("file", "length", "lang", "status", "time")
-        self.tree = ttk.Treeview(qc, columns=cols, show="headings", height=3, selectmode="extended")
-        for c, text, w, anchor in (("file", "FILE", 420, "w"), ("length", "LENGTH", 80, "e"),
-                                   ("lang", "LANGUAGE", 140, "w"), ("status", "STATUS", 170, "w"),
-                                   ("time", "TOOK", 70, "e")):
-            self.tree.heading(c, text=text, anchor=anchor)
-            self.tree.column(c, width=w, anchor=anchor, stretch=(c == "file"))
-        sb = ttk.Scrollbar(qc, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        sb.pack(side="right", fill="y")
-        self.tree.bind("<<TreeviewSelect>>", lambda e: self._show_selected())
-        self.tree.bind("<Double-1>", lambda e: self.toggle_play())
-        self.tree.bind("<Delete>", lambda e: self.remove_selected())
-        pane.add(qc, weight=1)
-
-        pf = ttk.Frame(pane, style="Card.TFrame", padding=(22, 14, 22, 14))
-        hdr = ttk.Frame(pf)
-        hdr.pack(fill="x")
-        self.preview_lbl = ttk.Label(hdr, text="Transcript", style="Title.TLabel")
-        self.preview_lbl.pack(side="left")
-        ttk.Checkbutton(hdr, text="Timestamps", variable=self.v_ts).pack(side="right")
-        self.py_cb = ttk.Checkbutton(hdr, text="Pinyin", variable=self.v_py)
-        self.py_cb.pack(side="right", padx=(14, 14))
-        self.showspk_cb = ttk.Checkbutton(hdr, text="Show speakers", variable=self.v_showspk)
-        self.showspk_cb.pack(side="right")
-        sp = ttk.Button(hdr, command=self.open_speakers)
-        sp.pack(side="right", padx=(0, 14))
-        self._ic(sp, "people", "text", 15, "Speakers…")
-        self.find_btn = ttk.Button(hdr, command=self.open_find)
-        self.find_btn.pack(side="right", padx=(0, 6))
-        self._ic(self.find_btn, "find", "text", 15, "Find")
-        h2 = ttk.Frame(pf)
-        h2.pack(fill="x", pady=(10, 10))
-        self.edit_btn = ttk.Button(h2, command=self.toggle_edit)
-        self.edit_btn.pack(side="left")
-        self._ic(self.edit_btn, "edit", "text", 15, "Edit transcript")
-        self.cancel_edit_btn = ttk.Button(h2, text="Discard edits", command=lambda: self.end_edit(False))
-        cp = ttk.Button(h2, command=self.copy_text)
-        cp.pack(side="left", padx=6)
-        self._ic(cp, "copy", "text", 15, "Copy text")
-        self.mp3_btn = ttk.Button(h2, command=self.save_mp3)
-        self.mp3_btn.pack(side="left")
-        self._ic(self.mp3_btn, "music", "text", 15, "Save audio as MP3")
-        ttk.Frame(pf, style="Line.TFrame", height=1).pack(fill="x", pady=(0, 6))
-        self._tr_pane = pane
-        return pf, h2
 
     def _transcript_box(self, pf, hdr):
         """The transcript text, its find bar and the player under it (both themes)."""
@@ -684,8 +724,22 @@ class App(BaseTk):
         self.text.configure(yscrollcommand=tsb.set, state="disabled")
         self.text.pack(side="left", fill="both", expand=True)
         tsb.pack(side="right", fill="y")
+        if mint:
+            # the bigger-window button sits in the top-right corner of the transcript box
+            ex = ttk.Button(body, command=self.open_big, takefocus=False)
+            self._ic(ex, "expand", "text", 15)
+            if not (getattr(self, "_icons", None) and self._icons[-1][0] is ex):
+                ex.configure(text="⤢")
+            ex.configure(padding=(8, 6))
+            ex.place(in_=self.text, relx=1.0, x=-4, y=4, anchor="ne")
+            self.big_btn = ex
         pane.add(pf, weight=3)
         theme.SashGrip(pane)
+        if mint:
+            # the transcript keeps a fair share when the window gets shorter (the file list gives way first)
+            self._sash_user = False
+            pane.bind("<Configure>", lambda e: pane.after_idle(self._keep_transcript), add="+")
+            pane.bind("<ButtonRelease-1>", lambda e: setattr(self, "_sash_user", True), add="+")
 
         self.text.bind(f"<{MOD}-a>", lambda e: (self.text.tag_add("sel", "1.0", "end"), "break")[1])
         self.text.bind("<Key>", self._edit_guard)
@@ -696,12 +750,33 @@ class App(BaseTk):
         self.text.tag_bind("spk", "<Button-2>", self._spk_menu)      # right-click on the Mac
         self.text.tag_bind("spk", "<Enter>", lambda e: (not self.editing) and self.text.configure(cursor="hand2"))
         self.text.tag_bind("seg", "<ButtonRelease-1>", self._click_seg)
+        self.text.bind("<Button-1>", self._text_press, add="+")
+        self.bind_all("<Button-1>", self._click_anywhere, add="+")
         self.text.tag_bind("seg", "<Enter>", lambda e: (not self.editing) and self.text.configure(cursor="hand2"))
         self.text.tag_bind("seg", "<Leave>", lambda e: self.text.configure(cursor="xterm" if self.editing
                                                                              else "arrow"))
         for w in (self.tree, self.text):
             w.bind("<space>", lambda e: None if self.editing else (self.toggle_play(), "break")[1])
         self._player_ui()
+
+    def _keep_transcript(self):
+        pane = self._tr_pane
+        try:
+            total = pane.winfo_height()
+            if total < 50 or len(pane.panes()) < 2:
+                return
+            upper = self.nametowidget(pane.panes()[0])
+            least = min(340, int(total * 0.5))          # room the transcript card always gets
+            pos = pane.sashpos(0)
+            if total - pos < least:
+                pane.sashpos(0, max(0, total - least))
+            elif not self._sash_user:
+                # back towards the usual layout when there's room again (unless you moved the divider yourself)
+                want = min(upper.winfo_reqheight(), total - least)
+                if want > pos + 2:
+                    pane.sashpos(0, want)
+        except tk.TclError:
+            pass
 
     def _tabs_after(self):
         mint = theme.mint()
@@ -779,25 +854,15 @@ class App(BaseTk):
         else:
             self.theme_btn.configure(text="Light mode" if self.dark else "Dark mode")
         sel = p.get("select", "#cce0ff")
-        self.text.configure(bg=p["field"], fg=p["text"], insertbackground=p["text"], highlightbackground=p["line"],
-                            highlightcolor=p["accent"], selectbackground=sel, inactiveselectbackground=sel)
-        self.text.tag_configure("ts", foreground=p["faint"], font=(UI, 9 + theme._S))
-        self.text.tag_configure("py", foreground=p["muted"], font=(UI, 10 + theme._S), spacing3=8)
-        self.text.tag_configure("ets", foreground=p["accent"], font=(MONO, 10 + theme._S))
-        self.text.tag_configure("now", background="#2f3b52" if self.dark else "#fff3b0")
-        self.text.tag_configure("err", foreground=p["tags"]["FAIL"])
-        self.text.tag_configure("spk", foreground=p["accent"], font=(UI, 10 + theme._S, "bold"), spacing1=4)
-        self.text.tag_configure("find", background="#5c4a12" if self.dark else "#ffe08a")
-        self.text.tag_configure("findcur", background="#d97706" if self.dark else "#ff9f43",
-                                foreground="#ffffff" if self.dark else "#000000")
+        self._style_text(self.text)
+        big = getattr(self, "big", None)
+        if big is not None and big.alive():
+            big.recolor()
         if hasattr(self, "trans_tab"):
             self.trans_tab.recolor(p, self.dark)
             self.sum_tab.recolor(p, self.dark)
         if hasattr(self, "chat_tab"):
             self.chat_tab.recolor(p, self.dark)
-        self.text.tag_raise("find")
-        self.text.tag_raise("findcur")
-        self.text.tag_raise("sel")
         ttk.Style(self).configure("Warn.TLabel", foreground="#f5a524" if self.dark else "#b45309")
         for k, color in p["tags"].items():
             self.tree.tag_configure(k, foreground=color)
@@ -809,6 +874,30 @@ class App(BaseTk):
                              "-foreground", p["text"], "-selectbackground", sel, "-selectforeground", p["text"])
             except tk.TclError:
                 pass
+
+    def _style_text(self, t, bigger=0):
+        """Colours and fonts of a transcript view (the Transcribe card, the bigger window)."""
+        p = self.pal
+        sel = p.get("select", "#cce0ff")
+        t.configure(bg=p["field"], fg=p["text"], insertbackground=p["text"], highlightbackground=p["line"],
+                    highlightcolor=p["accent"], selectbackground=sel, inactiveselectbackground=sel)
+        z = theme._S + bigger
+        t.tag_configure("ts", foreground=p["faint"], font=(UI, 9 + z))
+        t.tag_configure("py", foreground=p["muted"], font=(UI, 10 + z), spacing1=2, spacing3=3)
+        t.tag_configure("en", foreground=p["muted"], font=(theme.TEXT, 10 + z, "italic"), spacing1=2, spacing3=3)
+        t.tag_configure("ets", foreground=p["accent"], font=(MONO, 10 + z))
+        t.tag_configure("now", background="#2f3b52" if self.dark else "#fff3b0")
+        t.tag_configure("err", foreground=p["tags"]["FAIL"])
+        t.tag_configure("spk", foreground=p["accent"], font=(UI, 10 + z, "bold"), spacing1=4)
+        t.tag_configure("find", background="#5c4a12" if self.dark else "#ffe08a")
+        t.tag_configure("findcur", background="#d97706" if self.dark else "#ff9f43",
+                        foreground="#ffffff" if self.dark else "#000000")
+        # room after each sentence block (sentence, pinyin, English): made last so it wins over the others
+        t.tag_configure("gap", spacing3=16 + 2 * bigger)
+        t.tag_raise("gap")
+        t.tag_raise("find")
+        t.tag_raise("findcur")
+        t.tag_raise("sel")
 
     def open_theme(self):
         from .theme_win import ThemeWindow
@@ -1102,7 +1191,7 @@ class App(BaseTk):
             self._finish()
             return
         r = self.rows[item]
-        r.update(result=None, error=None, dirty=False, edited=False)
+        r.update(result=None, error=None, dirty=False, edited=False, live=[])
         self.current = item
         self.t_start = time.time()
         self._set_status(item, "RUN")
@@ -1170,6 +1259,55 @@ class App(BaseTk):
         self._stopall_ui()
         self._flash("Stopped everything. You can start again now.", 15)
 
+    def force_refresh(self):
+        """Get unstuck: stop everything, start fresh background workers, put the interrupted file back in the
+        queue and redraw. Press Start to run again."""
+        was = self.current
+        try:
+            self.stop_all()
+        except Exception as e:
+            log(f"force refresh: stop all: {e!r}")
+        for w in (self.wk, getattr(self.ai, "wk", None)):
+            try:
+                if w is not None:
+                    w.kill()
+            except Exception:
+                pass
+        self.wk = Worker(self._from_worker)
+        self.ai.wk = None
+        self.ai.owner = None
+        if self.running:                      # stop() didn't get there: finish by hand
+            self.running = False
+        self.current = None
+        self.t_start = None
+        self.start_btn.configure(text="Start", command=self.start, style="Accent.TButton")
+        for item, r in self.rows.items():
+            if r.get("status") == "RUN" or (item == was and r.get("status") == "SKIP"):
+                r["live"] = None
+                self._set_status(item, "WAIT")
+        for tab in (self.trans_tab, self.sum_tab, self.chat_tab):
+            try:
+                if hasattr(tab, "_busy"):
+                    tab._busy(False)
+                tab.running = False
+            except Exception:
+                pass
+        # restart the message pump, in case it was stopped
+        try:
+            self.after_cancel(self._pump_job)
+        except Exception:
+            pass
+        self._pump_job = self.after(50, self._pump)
+        self.progress["value"] = 0
+        try:
+            if self.preview_item in self.rows and not self.editing:
+                self._preview(self.preview_item)
+        except Exception as e:
+            log(f"force refresh: preview: {e!r}")
+        self._player_ui()
+        self._stopall_ui()
+        self._flash("Refreshed: everything was stopped and started afresh. Press Start to run again.", 20)
+
     def _tick(self, reschedule=True):
         if reschedule:
             self._stopall_ui()
@@ -1187,11 +1325,19 @@ class App(BaseTk):
     # ------------------------------------------------------------ UI pump
     def _pump(self):
         try:
-            while True:
-                self._handle(*self.events.get_nowait())
-        except queue.Empty:
-            pass
-        self.after(80, self._pump)
+            for _ in range(500):
+                try:
+                    msg = self.events.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    self._handle(*msg)
+                except Exception:
+                    # never let one message stop the app from hearing the workers (that froze re-runs at 5 %)
+                    import traceback
+                    log(f"UI error handling {msg[0]!r}: {traceback.format_exc()}")
+        finally:
+            self._pump_job = self.after(80, self._pump)
 
     def _handle(self, kind, *a):
         if kind == "call":
@@ -1205,7 +1351,7 @@ class App(BaseTk):
             self.device_lbl.configure(text=f"Running on: {self.device_name}" + ("" if self.has_gpu else " (slower)"))
             self.warn_lbl.configure(text=problem)
             if problem:
-                self.warn_lbl.pack(fill="x", padx=12, pady=(6, 0), before=self.nb)
+                self.warn_lbl.pack(fill="x", padx=12, pady=(6, 0), before=self.body)
             else:
                 self.warn_lbl.pack_forget()
             if not self.has_gpu and "model" not in self.s:
@@ -1240,7 +1386,9 @@ class App(BaseTk):
             item, seg = a
             r = self.rows.get(item)
             if r is not None:
-                r.setdefault("live", []).append(seg)
+                if r.get("live") is None:
+                    r["live"] = []
+                r["live"].append(seg)
             if item == self.preview_item and not self.editing:
                 self._append(seg, len(r["live"]) - 1 if r else 0)
         elif kind == "done":
@@ -1371,9 +1519,17 @@ class App(BaseTk):
         self._render()
         self._player_ui()
 
-    def _top_seg(self):
+    def _views(self):
+        """The text boxes showing the transcript: the card on the Transcribe tab, and the bigger window if open."""
+        out = [self.text]
+        big = getattr(self, "big", None)
+        if big is not None and big.alive():
+            out.append(big.text)
+        return out
+
+    def _top_seg(self, t=None):
         """(sentence number, how far into it) of the sentence at the top of the view, to come back to it."""
-        t = self.text
+        t = t or self.text
         idx = t.index("@0,0")
         for tg in t.tag_names(idx):
             if tg[0] == "s" and tg[1:].isdigit():
@@ -1385,8 +1541,8 @@ class App(BaseTk):
                     return int(tg[1:]), 0
         return None
 
-    def _scroll_to_seg(self, anchor):
-        t = self.text
+    def _scroll_to_seg(self, anchor, t=None):
+        t = t or self.text
         t.update_idletasks()
         if anchor is None:
             t.yview_moveto(0)
@@ -1403,23 +1559,85 @@ class App(BaseTk):
             return dict(res, speakers=[])
         return res
 
+    # Pinyin / English lines under each sentence
+    def _cur_lang(self, r=None):
+        r = r if r is not None else self.rows.get(self.preview_item)
+        res = (r or {}).get("result") or {}
+        return res.get("spoken_language") or res.get("language")
+
+    def _lines_ok(self):
+        """(Pinyin possible, English possible) for the transcript on show: Pinyin only for Chinese, English for
+        anything that isn't English already."""
+        from . import english
+        r = self.rows.get(self.preview_item) if self.preview_item else None
+        segs = self._segments(r)
+        texts = [x["text"] for x in segs[:400]]
+        lang = self._cur_lang(r)
+        py = pinyin.chinese(lang, texts) if texts else False
+        en = bool(r and r.get("result")) and english.english_ok(lang, texts)
+        return py, en
+
+    def _toggle_ui(self):
+        """Grey out Pinyin (not Chinese) and English (already English, or nothing transcribed yet)."""
+        py, en = self._py_ok, self._en_ok
+        boxes = [(getattr(self, "py_cb", None), py), (getattr(self, "en_cb", None), en)]
+        big = getattr(self, "big", None)
+        if big is not None and big.alive():
+            boxes += [(big.py_cb, py), (big.en_cb, en)]
+        for cb, ok in boxes:
+            if cb is not None:
+                cb.state(["!disabled"] if ok else ["disabled"])
+
+    def _en_toggled(self):
+        self._render(keep_view=True)
+        if hasattr(self, "trans_tab"):
+            self.trans_tab.render()
+
+    def _en_arrived(self):
+        """New English lines came in: draw them (staying at the same place)."""
+        if self.v_en.get() and self._en_ok and not self.editing:
+            self._render(keep_view=True)
+
     def _render(self, keep_view=False):
         """Draw the transcript like a document: paragraphs, optional (m:ss) stamps, each sentence clickable.
         keep_view: stay at the same place in the text (toggles, edit mode) instead of going to the top."""
         if self.editing:
             return
-        anchor = self._top_seg() if keep_view else None
-        self.text.configure(state="normal")
-        self.text.delete("1.0", "end")
-        self.now_seg = None
         r = self.rows.get(self.preview_item) if self.preview_item else None
-        segs = self._segments(r)
-        self.seg_starts = [s["start"] for s in segs]
+        self._py_ok, self._en_ok = self._lines_ok()
+        self._toggle_ui()
         if not r:
-            self.preview_lbl.configure(text="Transcript")
+            title = "Transcript"
         else:
+            title = f"Transcript — {r['file'].name}" + (" (live)" if r["status"] == "RUN" else "")
+        self.preview_lbl.configure(text=title)
+        big = getattr(self, "big", None)
+        if big is not None and big.alive():
+            big.title(r["file"].name if r else "")
+        # English lines wanted: ask for the ones not translated yet (they're filled in as they arrive)
+        self._lang_now = self._cur_lang(r)
+        if r and r.get("result") and self.v_en.get() and self._en_ok and hasattr(self, "english"):
+            from . import english, langs
+            segs = r["result"]["segments"]
+            todo = [x["text"] for x in segs if english.needs_english(x["text"], self._lang_now)]
+            hint = langs.from_iso(self._lang_now) if self._lang_now else None
+            if hint == "zho_Hans" and segs:
+                hint = langs.chinese_variant(" ".join(x["text"] for x in segs[:50]))
+            self.english.want(todo, hint)
+        for t in self._views():
+            self._draw(t, r, keep_view)
+        if self.find_bar.winfo_ismapped():
+            self._find_all(scroll=False)
+
+    def _draw(self, t, r, keep_view):
+        anchor = self._top_seg(t) if keep_view else None
+        t.configure(state="normal")
+        t.delete("1.0", "end")
+        self.now_seg = None
+        segs = self._segments(r)
+        self.seg_starts = [x["start"] for x in segs]
+        if r:
             live = r["status"] == "RUN"
-            self.preview_lbl.configure(text=f"Transcript — {r['file'].name}" + (" (live)" if live else ""))
             if segs:
                 res = self._view(r.get("result") or {"segments": segs, "language": None})
                 self._untimed = bool(res.get("no_times"))
@@ -1427,73 +1645,137 @@ class App(BaseTk):
                 idx = 0
                 for pi, (name, para) in enumerate(engine.labelled(res)):
                     if pi:
-                        self.text.insert("end", "\n\n")
+                        t.insert("end", "\n\n")
                     if name:
                         k = para[0].get("speaker") or 0
-                        self.text.insert("end", name, ("spk", f"k{k}", f"p{idx}", "prot"))
+                        t.insert("end", name, ("spk", f"k{k}", f"p{idx}", "prot"))
                         v = engine.voice_of(res, k)
                         if v:
-                            self.text.insert("end", f"  {'♀' if v == 'female' else '♂'} {v.capitalize()}", ("ts", "prot"))
-                        self.text.insert("end", "\n", ("prot",))
-                    for k, s in enumerate(para):
-                        self._insert_seg(s, idx, sep=(j if k else ""), cont=bool(k))
+                            t.insert("end", f"  {'♀' if v == 'female' else '♂'} {v.capitalize()}", ("ts", "prot"))
+                        t.insert("end", "\n", ("prot",))
+                    for k, x in enumerate(para):
+                        self._insert_seg(t, x, idx, sep=(j if k else ""), cont=bool(k))
                         idx += 1
             elif r.get("error"):
-                self.text.insert("end", f"Failed: {r['error']}", "err")
+                t.insert("end", f"Failed: {r['error']}", "err")
             elif r["status"] == "WAIT":
-                self.text.insert("end", "Press Start to transcribe this file. You can already play it below.", "ts")
+                t.insert("end", "Press Start to transcribe this file. You can already play it below.", "ts")
             elif r["status"] == "SKIP":
-                self.text.insert("end", "Cancelled. Press Start to transcribe it.", "ts")
+                t.insert("end", "Cancelled. Press Start to transcribe it.", "ts")
             elif live:
-                self.text.insert("end", "Working … text appears here as it's recognised.", "ts")
-        self.text.configure(state="disabled")
-        self._scroll_to_seg(anchor)
-        if self.find_bar.winfo_ismapped():
-            self._find_all(scroll=False)
+                t.insert("end", "Working … text appears here as it's recognised.", "ts")
+        t.configure(state="disabled")
+        self._scroll_to_seg(anchor, t)
 
-    def _insert_seg(self, s, i, sep="", cont=False):
+    def _insert_seg(self, t, s, i, sep="", cont=False):
         tag = f"s{i}"
-        py = self.v_py.get() and not self.editing and pinyin.has_han(s["text"])
-        if cont and (py or getattr(self, "_py_prev", False) or self.v_ts.get()):
-            self.text.insert("end", "\n")            # with timestamps or pinyin, each sentence gets its own line
+        text = s["text"]
+        extra = not self.editing
+        py = extra and self.v_py.get() and getattr(self, "_py_ok", False) and pinyin.is_chinese(text)
+        en = None
+        r = self.rows.get(self.preview_item)
+        if extra and self.v_en.get() and getattr(self, "_en_ok", False) and r and r.get("result"):
+            from . import english
+            if english.needs_english(text, getattr(self, "_lang_now", None)):
+                en = self.english.get(text) or "…"
+        lines = py or bool(en)
+        prev = getattr(self, "_py_prev", {})
+        if cont and (lines or prev.get(str(t)) or self.v_ts.get()):
+            t.insert("end", "\n")            # with timestamps, pinyin or English, each sentence gets its own line
         elif sep:
-            self.text.insert("end", sep)
-        self._py_prev = py
+            t.insert("end", sep)
+        prev[str(t)] = lines
+        self._py_prev = prev
+        gap = ("gap",) if (lines or self.v_ts.get()) else ()
+        # Tk takes a line's spacing from its first character, so the time carries the gap too
         if self.v_ts.get() and not getattr(self, "_untimed", False):
-            self.text.insert("end", f"({fmt_hms(s['start'])})\u00a0", ("ts", "seg", tag, "prot"))
-        self.text.insert("end", s["text"], ("seg", tag))
+            t.insert("end", f"({fmt_hms(s['start'])})\u00a0", ("ts", "seg", tag, "prot") + (() if lines else gap))
+        t.insert("end", text, ("seg", tag) + (() if lines else gap))
         if py:
             # the pinyin goes on its own line under the sentence (part of the sentence: clicking it plays it)
-            self.text.insert("end", "\n" + pinyin.line(s["text"]), ("py", "seg", tag, "prot"))
+            t.insert("end", "\n" + pinyin.line(text), ("py", "seg", tag, "prot") + (() if en else gap))
+        if en:
+            t.insert("end", "\n" + en, ("en", "seg", tag, "prot") + gap)
 
     def _append(self, seg, i):
         """A live segment while transcribing (new paragraph after a pause)."""
         r = self.rows.get(self.preview_item)
         segs = self._segments(r)
-        self.seg_starts = [s["start"] for s in segs]
-        self.text.configure(state="normal")
+        self.seg_starts = [x["start"] for x in segs]
         if i == 0:
-            self.text.delete("1.0", "end")
-            sep = ""
-        else:
-            prev = segs[i - 1] if i - 1 < len(segs) else None
-            sep = "\n\n" if prev and seg["start"] - prev["end"] > 2.0 else " "
-        at_end = self.text.yview()[1] > 0.98
-        self._insert_seg(seg, i, sep, cont=(sep == " "))
-        if at_end:
-            self.text.see("end")
-        self.text.configure(state="disabled")
+            self._py_ok, self._en_ok = self._lines_ok()
+            self._toggle_ui()
+        elif not self._py_ok and pinyin.is_chinese(seg["text"]):
+            self._py_ok, self._en_ok = self._lines_ok()
+            self._toggle_ui()
+        for t in self._views():
+            t.configure(state="normal")
+            if i == 0:
+                t.delete("1.0", "end")
+                sep = ""
+            else:
+                prev = segs[i - 1] if i - 1 < len(segs) else None
+                sep = "\n\n" if prev and seg["start"] - prev["end"] > 2.0 else " "
+            at_end = t.yview()[1] > 0.98
+            self._insert_seg(t, seg, i, sep, cont=(sep == " "))
+            if at_end:
+                t.see("end")
+            t.configure(state="disabled")
 
     def _click_seg(self, e):
-        if self.editing or self.text.tag_ranges("sel"):
-            return                       # editing, or selecting text to copy
-        idx = self.text.index(f"@{e.x},{e.y}")
-        for t in self.text.tag_names(idx):
-            if t[0] == "s" and t[1:].isdigit():
-                i = int(t[1:])
+        t = e.widget
+        if self.editing and t is self.text:
+            return
+        if t.tag_ranges("sel"):
+            return                       # selecting text to copy
+        from .widgets import blank_click
+        if blank_click(t, e):
+            return                       # empty space (Tk counts it as the nearest sentence): not a click on it
+        idx = t.index(f"@{e.x},{e.y}")
+        for tg in t.tag_names(idx):
+            if tg[0] == "s" and tg[1:].isdigit():
+                i = int(tg[1:])
                 if i < len(self.seg_starts):
                     self.play_at(self.seg_starts[i])
                 return
+
+    def _text_press(self, e):
+        """A click on empty space in the transcript clears the highlighted sentence and any selection."""
+        from .widgets import blank_click
+        if self.editing and e.widget is self.text:
+            return
+        if blank_click(e.widget, e):
+            for t in self._views():
+                t.tag_remove("now", "1.0", "end")
+                t.tag_remove("sel", "1.0", "end")
+            self.now_seg = None
+
+    def _click_anywhere(self, e):
+        """A click outside the text boxes (on a button, the page …) clears text highlighted with the mouse."""
+        w = e.widget
+        if isinstance(w, tk.Text) or not hasattr(w, "winfo_class"):
+            return
+        try:
+            if w.winfo_class() in ("TEntry", "TCombobox", "Entry"):
+                return
+        except tk.TclError:
+            return
+        for t in self._all_texts():
+            try:
+                t.tag_remove("sel", "1.0", "end")
+            except tk.TclError:
+                pass
+
+    def _all_texts(self):
+        out, todo = [], [self]
+        while todo:
+            w = todo.pop()
+            for c in w.winfo_children():
+                if isinstance(c, tk.Text):
+                    out.append(c)
+                else:
+                    todo.append(c)
+        return out
 
     def _highlight(self, pos):
         if self.editing or not self.seg_starts:
@@ -1501,14 +1783,28 @@ class App(BaseTk):
         i = bisect.bisect_right(self.seg_starts, pos + 0.05) - 1
         if i == self.now_seg:
             return
-        self.text.tag_remove("now", "1.0", "end")
         self.now_seg = i
-        if i >= 0:
-            rng = self.text.tag_ranges(f"s{i}")
-            if rng:
-                self.text.tag_add("now", rng[0], rng[1])
-                self.text.see(rng[1])
-                self.text.see(rng[0])
+        for t in self._views():
+            t.tag_remove("now", "1.0", "end")
+            if i >= 0:
+                rng = t.tag_ranges(f"s{i}")
+                if rng:
+                    t.tag_add("now", rng[0], rng[-1])
+                    t.see(rng[-1])
+                    t.see(rng[0])
+
+    def open_big(self):
+        """The transcript in a bigger window of its own, with the player."""
+        big = getattr(self, "big", None)
+        if big is not None and big.alive():
+            big.win.deiconify()
+            big.win.lift()
+            big.win.focus_force()
+            return
+        from .big_win import BigTranscript
+        self.big = BigTranscript(self)
+        self._render(keep_view=True)
+        self._player_ui()
 
     # ------------------------------------------------------------ find
     def open_find(self):
@@ -1587,13 +1883,18 @@ class App(BaseTk):
         self.find_lbl.configure(text=f"{self.find_i + 1} of {len(self.find_hits)}")
 
     # ------------------------------------------------------------ updates
-    def open_updates(self):
+    def open_updates(self, auto=False):
+        """auto: start the update as soon as the check confirms there is one (Update now in the start-up prompt)."""
         from .update_win import UpdateWindow
         if self.update_win is not None and self.update_win.alive():
             self.update_win.win.lift()
             self.update_win.win.focus_force()
+            if auto:
+                self.update_win.auto_go = True
+                if not self.update_win.busy and self.update_win._can_app():
+                    self.update_win.update_all()
             return
-        self.update_win = UpdateWindow(self)
+        self.update_win = UpdateWindow(self, auto_go=auto)
 
     def open_wifi(self):
         from .wifi_win import WifiWindow
@@ -1649,7 +1950,7 @@ class App(BaseTk):
                                               f"({wifi_store.human(size)}) stored on this PC — don't forget to "
                                               f"delete them when you're done.")
             if not self.wifi_note.winfo_manager():
-                self.wifi_note.pack(fill="x", before=self.nb)
+                self.wifi_note.pack(fill="x", before=self.body)
         else:
             self.wifi_note.pack_forget()
         if n == 0:
@@ -1685,27 +1986,60 @@ class App(BaseTk):
             self.update_btn.configure(text="Check for updates", style="TButton")
 
     def _quiet_update_check(self):
-        """At most once a day (unless switched off in Check for updates): if GitHub has a newer version, say so on
-        the button (no pop-up)."""
+        """Each time the app opens (unless switched off in Check for updates): ask GitHub, without showing anything,
+        whether there's a newer version. Only if there is, say so: Update now or Later."""
         from . import updater
         if not self.s.get("auto_update", True):
-            return
-        seen = self.s.get("latest_seen")
-        if seen and updater.is_newer(seen):
-            self.set_update_badge(seen)
-        if time.time() - self.s.get("last_update_check", 0) < 20 * 3600:
             return
 
         def work():
             try:
                 info = updater.latest()
             except Exception:
-                return
+                return                         # offline, GitHub unreachable …: stay quiet
             self.s["last_update_check"] = time.time()
             self.s["latest_seen"] = info["version"]
             if updater.is_newer(info["version"]):
-                self.events.put(("call", lambda: self.set_update_badge(info["version"])))
+                self.events.put(("call", lambda: self._update_found(info)))
         threading.Thread(target=work, daemon=True).start()
+
+    def _update_found(self, info):
+        self.set_update_badge(info["version"])
+        if self.update_win is not None and self.update_win.alive():
+            return                             # the Updates window is already open: it says so there
+        dlg = tk.Toplevel(self)
+        dlg.title("Update available")
+        dlg.transient(self)
+        dlg.resizable(False, False)
+        dlg.configure(bg=self.pal["bg"])
+        f = ttk.Frame(dlg, padding=22, style="Card.TFrame" if theme.mint() else "TFrame")
+        f.pack(fill="both", expand=True)
+        ttk.Label(f, text=f"{APP_NAME} {info['version']} is available", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(f, justify="left", wraplength=420, style="Muted.TLabel",
+                  text=f"You have {APP_VERSION}. Update now downloads the new version and installs it; your settings "
+                       "and models are kept.").pack(anchor="w", pady=(8, 18))
+        row = ttk.Frame(f)
+        row.pack(fill="x")
+
+        def later():
+            dlg.destroy()
+            self._flash(f"Version {info['version']} is available — press Check for updates when you're ready.", 10)
+
+        def now():
+            dlg.destroy()
+            self.open_updates(auto=True)
+        ttk.Button(row, text="Later", command=later).pack(side="right")
+        b = ttk.Button(row, text="Update now", style="Accent.TButton", command=now)
+        b.pack(side="right", padx=8)
+        b.focus_set()
+        dlg.bind("<Return>", lambda e: now())
+        dlg.bind("<Escape>", lambda e: later())
+        dlg.protocol("WM_DELETE_WINDOW", later)
+        dlg.update_idletasks()
+        theme.title_bar(dlg, self.dark)
+        x = self.winfo_rootx() + (self.winfo_width() - dlg.winfo_width()) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_height()) // 3
+        dlg.geometry(f"+{max(x, 0)}+{max(y, 0)}")
 
     def copy_text(self):
         r = self.rows.get(self.preview_item)

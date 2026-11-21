@@ -19,8 +19,9 @@ from .worker import Worker
 
 
 class UpdateWindow:
-    def __init__(self, app):
+    def __init__(self, app, auto_go=False):
         self.app = app
+        self.auto_go = auto_go        # Update now was pressed in the start-up prompt: go once the check is done
         self.q = queue.Queue()
         self.info = None              # latest release (dict) or None
         self.app_err = None
@@ -54,7 +55,7 @@ class UpdateWindow:
         self.status = ttk.Label(f, wraplength=640, justify="left")
         self.status.pack(side="bottom", fill="x", pady=(6, 0))
         self.auto = tk.BooleanVar(value=app.s.get("auto_update", True))
-        ttk.Checkbutton(f, text="Check for updates automatically (once a day)", variable=self.auto,
+        ttk.Checkbutton(f, text="Check for updates each time the app opens", variable=self.auto,
                         command=lambda: app.s.__setitem__("auto_update", self.auto.get())).pack(
             side="bottom", anchor="w", pady=(10, 0))
         p = app.pal
@@ -279,6 +280,10 @@ class UpdateWindow:
         else:
             self.status.configure(text="")
         self.app.set_update_badge(self.info["version"] if self._app_newer() else None)
+        if self.auto_go:
+            self.auto_go = False
+            if self._can_app():
+                self.update_all()
 
     # ------------------------------------------------------------ update all
     def update_all(self):

@@ -7,7 +7,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
 
-from . import engine, models, theme
+from . import pinyin, engine, models, theme
 from .common import fmt_hms, log
 from .tabs import _Pane, ensure_models
 from .theme import UI
@@ -242,13 +242,28 @@ class ChatTab(ttk.Frame):
         self.rec = None              # microphone recording in progress
         self._sugg_for = None
 
+        self._sugg_now = []
+        # Pinyin / English under the questions, answers and suggestions (Pinyin only for Chinese)
+        self.v_py = tk.BooleanVar(value=app.s.get("chat_pinyin", False))
+        self.v_en = tk.BooleanVar(value=app.s.get("chat_english", False))
+        for key, v in (("chat_pinyin", self.v_py), ("chat_english", self.v_en)):
+            v.trace_add("write", lambda *_, key=key, v=v: (app.s.__setitem__(key, v.get()), app._save(),
+                                                           self._extras_changed()))
+        app.english.listeners.append(self._en_arrived)
+
         top = ttk.Frame(self)
         top.pack(fill="x")
-        self.src_lbl = ttk.Label(top, style="Muted.TLabel")
-        self.src_lbl.pack(side="left", fill="x", expand=True)
+        # buttons and switches first, so they always keep their room; the file name wraps onto more lines
         ttk.Button(top, text="New chat", command=self.new_chat).pack(side="right")
         ttk.Button(top, text="Speakers…", command=self.speakers).pack(side="right", padx=6)
         ttk.Button(top, text="📎  Add file…", command=self.add_file).pack(side="right")
+        self.en_cb = ttk.Checkbutton(top, text="English", variable=self.v_en)
+        self.en_cb.pack(side="right", padx=(14, 18))
+        self.py_cb = ttk.Checkbutton(top, text="Pinyin", variable=self.v_py)
+        self.py_cb.pack(side="right", padx=(14, 0))
+        self.src_lbl = ttk.Label(top, style="Muted.TLabel", justify="left")
+        self.src_lbl.pack(side="left", fill="x", expand=True)
+        self.src_lbl.bind("<Configure>", lambda e: self.src_lbl.configure(wraplength=max(e.width - 4, 120)))
         self._await = None             # a recording added here that's being transcribed
 
         # the answers on top, the question box below; drag the divider between them
@@ -410,12 +425,16 @@ class ChatTab(ttk.Frame):
         t.tag_configure("b", font=(theme.TEXT, 11 + theme._S, "bold"))
         t.tag_configure("time", foreground=p["accent"], underline=True)
         t.tag_configure("think", foreground=p["faint"])
+        t.tag_configure("py", foreground=p["muted"], font=(UI, 10 + theme._S), lmargin1=4, lmargin2=4)
+        t.tag_configure("en", foreground=p["muted"], font=(theme.TEXT, 10 + theme._S, "italic"), lmargin1=4,
+                        lmargin2=4)
         self.ask.tag_configure("ph", foreground=p["faint"])
         sel = p.get("select", "#cce0ff")
         self.ask.configure(bg=p["field"], fg=p["text"], insertbackground=p["text"], highlightbackground=p["line"],
                            highlightcolor=p["accent"], selectbackground=sel, inactiveselectbackground=sel)
-        ttk.Style(self).configure("Sugg.TLabel", foreground=p["faint"], font=(UI, 10 + theme._S))
-        ttk.Style(self).configure("SuggHot.TLabel", foreground=p["accent"], font=(UI, 10 + theme._S))
+        # the text font (not Nunito): Chinese suggestions otherwise come out in mixed-up fallback glyphs
+        ttk.Style(self).configure("Sugg.TLabel", foreground=p["muted"], font=(theme.TEXT, 10 + theme._S))
+        ttk.Style(self).configure("SuggHot.TLabel", foreground=p["accent"], font=(theme.TEXT, 10 + theme._S))
         ttk.Style(self).configure("Source.TLabel", foreground=p["accent"], font=(UI, 11 + theme._S, "bold"))
 
     def _flash(self, msg):
@@ -464,9 +483,13 @@ class ChatTab(ttk.Frame):
     # ------------------------------------------------------------ drawing
     def redraw(self):
         t = self.pane.text
+        anchor = t.yview()[0]
+        at_end = t.yview()[1] > 0.98
         t.configure(state="normal")
         t.delete("1.0", "end")
         self.times = {}
+        self._en_todo = []
+        self._toggle_ui()
         st = self._state()
         if not st or not st["hist"]:
             t.insert("end", "Ask anything about the recording, for example:\n\n"
@@ -480,14 +503,83 @@ class ChatTab(ttk.Frame):
                 self._put_q(q)
                 self._put_a(a)
         t.configure(state="disabled")
-        t.see("end")
+        if at_end:
+            t.see("end")
+        else:
+            t.yview_moveto(anchor)
+        self._ask_english()
 
-    def _put_q(self, q):
+    def _ask_english(self):
+        if self._en_todo:
+            self.app.english.want(self._en_todo)
+            self._en_todo = []
+
+    # ------------------------------------------------------------ Pinyin / English lines
+    def _texts(self):
+        st = self._state()
+        out = []
+        for q, a in (st or {}).get("hist") or []:
+            out.append(q)
+            out += [ln for ln in (a or "").splitlines() if ln.strip()]
+        return out + list(self._sugg_now or [])
+
+    def _lines_ok(self):
+        """(Pinyin possible, English possible): Pinyin only when the chat is in Chinese, English when it isn't all
+        English already."""
+        from . import english
+        texts = self._texts()
+        r = self.app.rows.get(self.item)
+        lang = ((r or {}).get("result") or {}).get("spoken_language")
+        if not texts:
+            return lang in ("zh", "yue"), bool(lang) and lang != "en"
+        return pinyin.chinese(None, texts), english.english_ok(None, texts)
+
+    def _toggle_ui(self):
+        self._py_ok, self._en_ok = self._lines_ok()
+        self.py_cb.state(["!disabled"] if self._py_ok else ["disabled"])
+        self.en_cb.state(["!disabled"] if self._en_ok else ["disabled"])
+
+    def _extras_changed(self):
+        if self.running:
+            return
+        self._toggle_ui()
+        self.redraw()
+        self._show_sugg(self._sugg_now)
+
+    def _en_arrived(self):
+        if self.v_en.get() and not self.running:
+            self.redraw()
+            self._show_sugg(self._sugg_now)
+
+    def _extra(self, text):
+        """(pinyin, English) to show under a line (None when off / not needed). English not known yet: '…'."""
+        from . import english
+        py = en = None
+        if self.v_py.get() and getattr(self, "_py_ok", False) and pinyin.is_chinese(text):
+            py = pinyin.line(text)
+        if self.v_en.get() and getattr(self, "_en_ok", False) and english.needs_english(text):
+            en = self.app.english.get(text)
+            if en is None:
+                self._en_todo.append(text)
+                en = "…"
+        return py, en
+
+    def _put_extra(self, text, tags=()):
+        py, en = self._extra(text)
+        t = self.pane.text
+        if py:
+            t.insert("end", py + "\n", ("py",) + tuple(tags))
+        if en:
+            t.insert("end", en + "\n", ("en",) + tuple(tags))
+
+    def _put_q(self, q, extras=True):
         t = self.pane.text
         if t.get("1.0", "end").strip():
             t.insert("end", "\n")
         t.insert("end", "You\n", ("you",))
         t.insert("end", q + "\n", ("q",))
+        if extras:
+            self._put_extra(q, ("q",))
 
     def _put_a(self, a, live=False):
         t = self.pane.text
@@ -503,6 +595,8 @@ class ChatTab(ttk.Frame):
             s = re.sub(r"^#{1,4}\s*", "", s)
             self._inline(s, tags)
             t.insert("end", "\n", tags)
+            if not live and s.strip():
+                self._put_extra(s, tags)
         if live:
             t.insert("end", "▍", ("think",))
 
@@ -547,21 +641,31 @@ class ChatTab(ttk.Frame):
     def _show_sugg(self, qs):
         for c in self.sugg.winfo_children():
             c.destroy()
+        self._sugg_now = list(qs or [])
         if not qs:
             return
+        if not hasattr(self, "_en_todo"):
+            self._en_todo = []
+        self._toggle_ui()
         ttk.Label(self.sugg, text="Suggestions", style="Small.TLabel").pack(anchor="w")
         for q in qs:
-            lb = ttk.Label(self.sugg, text="›  " + q, style="Sugg.TLabel", cursor="hand2")
+            py, en = self._extra(q)
+            text = "›  " + q + "".join(f"\n     {x}" for x in (py, en) if x)
+            lb = ttk.Label(self.sugg, text=text, style="Sugg.TLabel", cursor="hand2")
             lb.pack(anchor="w", pady=(2, 0))
             lb.bind("<Button-1>", lambda e, q=q: self.send(q))
             lb.bind("<Enter>", lambda e, w=lb: w.configure(style="SuggHot.TLabel"))
             lb.bind("<Leave>", lambda e, w=lb: w.configure(style="Sugg.TLabel"))
+        self._ask_english()
 
     def _ask_suggestions(self):
         r = self.app.rows.get(self.item)
         st = self._state()
-        if not r or st is None or self.app.ai.busy():
+        ai = self.app.ai
+        if not r or st is None or (ai.busy() and not (ai.bg and ai.owner is self.app.english)):
             return
+        if ai.owner is self.app.english:
+            ai.free_for(self)
         self._sugg_for = self.item
         self.app.ai.run(self, [{"kind": "suggest", "id": "sugg", "ctx": build_ctx(self.app, r),
                                 "history": st["hist"][-3:]}])
@@ -603,7 +707,7 @@ class ChatTab(ttk.Frame):
         self.ask.delete("1.0", "end")
         t = self.pane.text
         t.configure(state="normal")
-        self._put_q(q)
+        self._put_q(q, extras=False)
         t.configure(state="disabled")
         self._live("")
         self._show_sugg([])

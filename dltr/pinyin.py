@@ -20,6 +20,26 @@ def has_han(text):
     return bool(text) and HAN.search(text) is not None
 
 
+_NOT_ZH = re.compile(r"[぀-ヿ가-힯]")      # Japanese kana, Korean hangul
+
+
+def is_chinese(text):
+    """Chinese characters, and not Japanese / Korean (which also use them): Hanyu Pinyin makes sense."""
+    return has_han(text) and _NOT_ZH.search(text) is None
+
+
+def chinese(lang, texts):
+    """Is this transcript / chat Chinese (Mandarin, Cantonese; simplified or traditional)? Pinyin is offered
+    only then."""
+    if lang in ("zh", "yue"):
+        return True
+    if lang in ("ja", "ko"):
+        return False
+    texts = [t for t in texts if t and t.strip()]
+    n = sum(1 for t in texts if is_chinese(t))
+    return n >= max(1, len(texts) // 10)
+
+
 def line(text):
     """'保护自己，远离Ah Choo。' -> 'bǎo hù zì jǐ, yuǎn lí Ah Choo.' (one syllable per character, so it lines up
     with the characters; heteronyms like 银行 / 行走 are read by word)."""
